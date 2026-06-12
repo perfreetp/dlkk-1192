@@ -114,9 +114,49 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
     set(state => {
       const beforeSnapshot = state.knowledgePoints.map(kp => ({ ...kp, prerequisites: [...kp.prerequisites], successors: [...kp.successors] }));
       const targetKp = state.knowledgePoints.find(kp => kp.id === id);
-      const updated = state.knowledgePoints.map(kp =>
-        kp.id === id ? { ...kp, ...updates, updatedAt: new Date().toISOString() } : kp
+
+      const newPrereqs = updates.prerequisites !== undefined ? updates.prerequisites : targetKp?.prerequisites || [];
+      const newSuccessors = updates.successors !== undefined ? updates.successors : targetKp?.successors || [];
+      const oldPrereqs = targetKp?.prerequisites || [];
+      const oldSuccessors = targetKp?.successors || [];
+
+      let updated = state.knowledgePoints.map(kp =>
+        kp.id === id ? { ...kp, ...updates, updatedAt: new Date().toISOString() } : { ...kp }
       );
+
+      updated = updated.map(kp => {
+        const changed: string[] = [];
+
+        const isPrereqOfTarget_old = oldPrereqs.includes(kp.id);
+        const isPrereqOfTarget_new = newPrereqs.includes(kp.id);
+        if (isPrereqOfTarget_old && !isPrereqOfTarget_new) {
+          kp.successors = kp.successors.filter(sid => sid !== id);
+          changed.push('successors');
+        } else if (!isPrereqOfTarget_old && isPrereqOfTarget_new) {
+          if (!kp.successors.includes(id)) {
+            kp.successors = [...kp.successors, id];
+            changed.push('successors');
+          }
+        }
+
+        const isSuccessorOfTarget_old = oldSuccessors.includes(kp.id);
+        const isSuccessorOfTarget_new = newSuccessors.includes(kp.id);
+        if (isSuccessorOfTarget_old && !isSuccessorOfTarget_new) {
+          kp.prerequisites = kp.prerequisites.filter(pid => pid !== id);
+          changed.push('prerequisites');
+        } else if (!isSuccessorOfTarget_old && isSuccessorOfTarget_new) {
+          if (!kp.prerequisites.includes(id)) {
+            kp.prerequisites = [...kp.prerequisites, id];
+            changed.push('prerequisites');
+          }
+        }
+
+        if (changed.length > 0 && kp.id !== id) {
+          kp.updatedAt = new Date().toISOString();
+        }
+        return kp;
+      });
+
       persistKnowledgePoints(updated);
       return {
         knowledgePoints: updated,

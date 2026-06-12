@@ -201,4 +201,6 @@ export interface PracticePaper {
   questions: Question[];
   estimatedTime: number;
   createdAt: string;
+  sourceKpIds?: string[];
+  parentPaperId?: string;
 }

@@ -19,6 +19,9 @@ import {
   EyeOff,
   ArrowLeft,
   Link2,
+  GitBranch,
+  CalendarDays,
+  TrendingUp,
 } from 'lucide-react';
 import { DifficultyBadge, QuestionTypeBadge, ErrorReasonBadge } from '@/components/ui/Badge';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -44,6 +47,7 @@ const Practice = () => {
     score,
     resultQuestions,
     previousPractice,
+    practiceHistory,
     generatePaper,
     startPractice,
     submitAnswer,
@@ -53,6 +57,7 @@ const Practice = () => {
     resetPractice,
     setPreviousPractice,
     clearPreviousPractice,
+    getPracticeChain,
   } = usePracticeStore();
 
   const studentId = currentUser?.id || 'stu-1';
@@ -709,6 +714,117 @@ const Practice = () => {
             </div>
           )}
 
+          {generatedPaper && (() => {
+            const chain = getPracticeChain(generatedPaper.id);
+            if (chain.length === 0) return null;
+            const currentIdx = chain.findIndex(c => c.paperId === generatedPaper.id);
+            const getSourceLabel = (entry: typeof chain[number]) => {
+              if (entry.sourceType === 'retry-similar' && entry.sourceQuestionIndex !== undefined) return `同类再练·第 ${entry.sourceQuestionIndex + 1} 题`;
+              if (entry.sourceType === 'retry-wrong') return '基于错题知识点重卷';
+              if (entry.sourceType === 'retry-all') return '全卷再练';
+              return '原始练习';
+            };
+            const getScoreColor = (s: number) => s >= 80 ? 'text-emerald-600' : s >= 60 ? 'text-blue-600' : 'text-red-500';
+            return (
+              <div className="card p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                    <GitBranch className="w-5 h-5 text-primary-500" />
+                    练习链路时间线
+                  </h3>
+                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                    <CalendarDays className="w-3.5 h-3.5" />
+                    {chain.length} 次练习
+                  </span>
+                </div>
+
+                <div className="relative pl-1 space-y-4">
+                  <div className="absolute left-[11px] top-2 bottom-2 w-0.5 bg-gray-200" />
+                  {chain.map((entry, i) => {
+                    const isCurrent = entry.paperId === generatedPaper.id;
+                    const score = entry.score || 0;
+                    const wrongCount = entry.wrongQuestionIds?.length || (entry.totalQuestions - entry.correctCount);
+                    const solvedCount = entry.solvedQuestionIds?.length || entry.correctCount;
+                    const hasImprovement = i > 0 && score > (chain[i - 1].score || 0);
+                    return (
+                      <div key={entry.paperId} className="relative">
+                        <div className={`absolute -left-1 top-1 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                          isCurrent
+                            ? 'bg-primary-500 border-primary-500 text-white'
+                            : entry.finishedAt
+                            ? 'bg-white border-gray-300 text-gray-400'
+                            : 'bg-amber-100 border-amber-400 text-amber-600'
+                        }`}>
+                          {isCurrent ? <Target className="w-2.5 h-2.5" /> :
+                           entry.finishedAt ? <Check className="w-2.5 h-2.5" /> :
+                           <Clock className="w-2.5 h-2.5" />}
+                        </div>
+                        <div className={`ml-7 p-3 rounded-xl border transition-all ${
+                          isCurrent
+                            ? 'bg-primary-50/60 border-primary-200'
+                            : 'bg-white border-gray-100 hover:border-gray-200'
+                        }`}>
+                          <div className="flex items-start justify-between gap-2 mb-1.5">
+                            <div className="min-w-0">
+                              <p className={`text-sm font-semibold ${isCurrent ? 'text-primary-700' : 'text-gray-700'} truncate`}>
+                                {entry.paperTitle}
+                              </p>
+                              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                                  {getSourceLabel(entry)}
+                                </span>
+                                {entry.sourceKpIds && entry.sourceKpIds.length > 0 && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">
+                                    围绕 {entry.sourceKpIds.length} 个知识点
+                                  </span>
+                                )}
+                                {hasImprovement && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 flex items-center gap-0.5">
+                                    <TrendingUp className="w-2.5 h-2.5" />
+                                    进步 {score - (chain[i - 1]?.score || 0)} 分
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className={`text-lg font-bold ${entry.finishedAt ? getScoreColor(score) : 'text-gray-400'}`}>
+                                {entry.finishedAt ? `${score}分` : '进行中'}
+                              </p>
+                              {entry.finishedAt && (
+                                <p className="text-[10px] text-gray-500 mt-0.5">
+                                  对{solvedCount}/错{wrongCount}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-gray-400 flex items-center gap-1">
+                            <CalendarDays className="w-2.5 h-2.5" />
+                            {entry.finishedAt
+                              ? new Date(entry.finishedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                              : entry.createdAt
+                                ? `创建于 ${new Date(entry.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+                                : ''}
+                          </p>
+
+                          {viewingPrevious === false && !isCurrent && (
+                            <div className="mt-2 flex items-center gap-2 border-t border-gray-100 pt-2">
+                              <button
+                                disabled
+                                className="text-[10px] text-gray-400 bg-gray-50 px-2 py-0.5 rounded cursor-not-allowed"
+                              >
+                                （链路详情需在时间线中查看完整快照）
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="card text-center">
             <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-br from-accent-400 to-accent-500 text-white flex items-center justify-center">
               <Award className="w-12 h-12" />
@@ -784,6 +900,7 @@ const Practice = () => {
                           totalQuestions: generatedPaper.questions.length,
                           correctCount: resultQuestions.filter(r => r.isCorrect).length,
                           sourceType: 'retry-wrong',
+                          sourceKpIds: wrongKpIds,
                           createdAt: new Date().toISOString(),
                         });
                         setSelectedKnowledgeIds(wrongKpIds);
@@ -987,6 +1104,7 @@ const Practice = () => {
                                     correctCount: resultQuestions.filter(r => r.isCorrect).length,
                                     sourceType: 'retry-similar',
                                     sourceQuestionIndex: idx,
+                                    sourceKpIds: [q.knowledgePointId],
                                     createdAt: new Date().toISOString(),
                                   });
                                   setSelectedKnowledgeIds([q.knowledgePointId]);

@@ -100,31 +100,67 @@ const KnowledgeMap = () => {
 
   const changeDiff = useMemo(() => {
     if (!lastKnowledgeChange) return null;
-    const { beforeSnapshot, afterSnapshot, kpId } = lastKnowledgeChange;
-    const beforeKp = beforeSnapshot.find(kp => kp.id === kpId);
-    const afterKp = afterSnapshot.find(kp => kp.id === kpId);
+    const { beforeSnapshot, afterSnapshot, kpId, type } = lastKnowledgeChange;
 
-    const diffs: { field: string; before: string; after: string }[] = [];
-    if (lastKnowledgeChange.type === 'add') {
-      diffs.push({ field: '操作', before: '(新增知识点)', after: afterKp?.name || '' });
-    } else if (lastKnowledgeChange.type === 'delete') {
-      diffs.push({ field: '操作', before: beforeKp?.name || '', after: '(已删除)' });
-    } else {
-      if (beforeKp && afterKp) {
+    const allIds = new Set<string>();
+    beforeSnapshot.forEach(kp => allIds.add(kp.id));
+    afterSnapshot.forEach(kp => allIds.add(kp.id));
+
+    const perKpDiffs: { kpId: string; kpName: string; diffs: { field: string; before: string; after: string }[] }[] = [];
+
+    const getNameById = (snap: typeof beforeSnapshot, id: string) => {
+      const k = snap.find(x => x.id === id);
+      return k?.name || id;
+    };
+    const listNames = (snap: typeof beforeSnapshot, ids: string[]) =>
+      ids.length === 0 ? '(无)' : ids.map(id => getNameById(snap, id)).sort().join(', ');
+
+    allIds.forEach(id => {
+      const beforeKp = beforeSnapshot.find(kp => kp.id === id);
+      const afterKp = afterSnapshot.find(kp => kp.id === id);
+      const diffs: { field: string; before: string; after: string }[] = [];
+
+      if (!beforeKp && afterKp) {
+        diffs.push({ field: '操作', before: '(新增知识点)', after: afterKp.name });
+        diffs.push({ field: '父级节点', before: '(无)', after: afterKp.parentId ? getNameById(afterSnapshot, afterKp.parentId) : '(无)' });
+        diffs.push({ field: '前置知识', before: '(无)', after: listNames(afterSnapshot, afterKp.prerequisites) });
+        diffs.push({ field: '后续知识', before: '(无)', after: listNames(afterSnapshot, afterKp.successors) });
+      } else if (beforeKp && !afterKp) {
+        diffs.push({ field: '操作', before: beforeKp.name, after: '(已删除)' });
+      } else if (beforeKp && afterKp) {
         if (beforeKp.name !== afterKp.name) diffs.push({ field: '名称', before: beforeKp.name, after: afterKp.name });
         if (beforeKp.level !== afterKp.level) diffs.push({ field: '层级', before: `Level ${beforeKp.level}`, after: `Level ${afterKp.level}` });
-        const beforeParent = beforeKp.parentId ? beforeSnapshot.find(kp => kp.id === beforeKp.parentId)?.name || beforeKp.parentId : '(无)';
-        const afterParent = afterKp.parentId ? afterSnapshot.find(kp => kp.id === afterKp.parentId)?.name || afterKp.parentId : '(无)';
+        const beforeParent = beforeKp.parentId ? getNameById(beforeSnapshot, beforeKp.parentId) : '(无)';
+        const afterParent = afterKp.parentId ? getNameById(afterSnapshot, afterKp.parentId) : '(无)';
         if (beforeParent !== afterParent) diffs.push({ field: '父级节点', before: beforeParent, after: afterParent });
-        const beforePre = beforeKp.prerequisites.map(id => beforeSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
-        const afterPre = afterKp.prerequisites.map(id => afterSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
+        const beforePre = listNames(beforeSnapshot, beforeKp.prerequisites);
+        const afterPre = listNames(afterSnapshot, afterKp.prerequisites);
         if (beforePre !== afterPre) diffs.push({ field: '前置知识', before: beforePre, after: afterPre });
-        const beforeSuc = beforeKp.successors.map(id => beforeSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
-        const afterSuc = afterKp.successors.map(id => afterSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
+        const beforeSuc = listNames(beforeSnapshot, beforeKp.successors);
+        const afterSuc = listNames(afterSnapshot, afterKp.successors);
         if (beforeSuc !== afterSuc) diffs.push({ field: '后续知识', before: beforeSuc, after: afterSuc });
       }
+
+      if (diffs.length > 0) {
+        perKpDiffs.push({
+          kpId: id,
+          kpName: (afterKp || beforeKp)?.name || id,
+          diffs,
+        });
+      }
+    });
+
+    if (type === 'update' && perKpDiffs.length === 0) {
+      const beforeKp = beforeSnapshot.find(kp => kp.id === kpId);
+      const afterKp = afterSnapshot.find(kp => kp.id === kpId);
+      perKpDiffs.push({
+        kpId,
+        kpName: (afterKp || beforeKp)?.name || kpId,
+        diffs: [{ field: '备注', before: '(内容未检测到变化)', after: '(已更新时间戳)' }],
+      });
     }
-    return diffs;
+
+    return perKpDiffs;
   }, [lastKnowledgeChange]);
 
   const formatTime = (iso: string) => {
@@ -563,22 +599,43 @@ const KnowledgeMap = () => {
                 </div>
 
                 {changeDiff && changeDiff.length > 0 && (
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-2 space-y-2">
                     <p className="text-xs text-gray-500 flex items-center gap-1 mb-1">
                       <GitCompareArrows className="w-3 h-3" />
-                      修改前后对比
+                      本次修改涉及 {changeDiff.length} 个节点，前后对比：
                     </p>
-                    {changeDiff.map((d, i) => (
-                      <div key={i} className="p-2 bg-white rounded-lg text-xs">
-                        <p className="text-gray-500 mb-1">{d.field}</p>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-red-600 bg-red-50 px-1.5 py-0.5 rounded flex-1 truncate">
-                            {d.before || '(空)'}
-                          </span>
-                          <ArrowRight className="w-3 h-3 text-gray-400 shrink-0" />
-                          <span className="text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex-1 truncate">
-                            {d.after || '(空)'}
-                          </span>
+                    {changeDiff.map((kp, i) => (
+                      <div key={i} className="p-2 bg-white rounded-lg border border-gray-100">
+                        <p className="text-xs font-medium text-gray-700 mb-1.5 flex items-center gap-1">
+                          <Link2 className="w-3 h-3 text-primary-500 shrink-0" />
+                          <span className="truncate">{kp.kpName}</span>
+                          <button
+                            onClick={() => {
+                              if (knowledgePoints.some(k => k.id === kp.kpId)) {
+                                setSelectedNodeId(kp.kpId);
+                              }
+                            }}
+                            disabled={!knowledgePoints.some(k => k.id === kp.kpId)}
+                            className="text-[10px] text-primary-500 hover:text-primary-600 disabled:text-gray-400 disabled:cursor-not-allowed shrink-0"
+                          >
+                            定位
+                          </button>
+                        </p>
+                        <div className="space-y-1">
+                          {kp.diffs.map((d, j) => (
+                            <div key={j} className="text-xs">
+                              <p className="text-gray-500 mb-0.5">{d.field}</p>
+                              <div className="flex items-center gap-1">
+                                <span className="text-red-600 bg-red-50 px-1.5 py-0.5 rounded flex-1 truncate">
+                                  {d.before || '(空)'}
+                                </span>
+                                <ArrowRight className="w-3 h-3 text-gray-400 shrink-0" />
+                                <span className="text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex-1 truncate">
+                                  {d.after || '(空)'}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     ))}

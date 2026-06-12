@@ -288,20 +288,42 @@ const TeacherWorkbench = () => {
         }
 
         const kpOptions = knowledgePoints.map(kp => ({ id: kp.id, name: kp.name }));
+
+        const getField = (row: Record<string, any>, keys: string[]): any => {
+          for (const k of keys) {
+            if (row[k] !== undefined && row[k] !== null && row[k] !== '') return row[k];
+          }
+          const lowerKeys = Object.keys(row);
+          for (const wantKey of keys) {
+            const match = lowerKeys.find(k => k.toLowerCase() === wantKey.toLowerCase());
+            if (match && row[match] !== undefined && row[match] !== null && row[match] !== '') return row[match];
+          }
+          return undefined;
+        };
+
         const preview = parsed.map((row: any) => {
-          const studentName = row['学员姓名'] || row['studentName'] || row['学生'] || '';
-          const qId = row['题目ID'] || row['questionId'] || row['题目'] || generateId();
-          const qContent = row['题目内容'] || row['content'] || row['题目'] || `题目 ${qId}`;
-          const sAnswer = row['学生答案'] || row['studentAnswer'] || row['作答'] || '';
-          const cAnswer = row['正确答案'] || row['correctAnswer'] || row['答案'] || '';
-          const rawScore = row['得分'] !== undefined && row['得分'] !== '' ? row['score'] !== undefined && row['score'] !== '' ? (row['得分'] || row['score']) : row['得分'] : undefined;
-          const rawTotal = row['满分'] !== undefined && row['满分'] !== '' ? row['totalScore'] !== undefined && row['totalScore'] !== '' ? (row['满分'] || row['totalScore'] || row['总分']) : row['满分'] : undefined;
-          const score = rawScore !== undefined ? Number(rawScore) : (sAnswer === cAnswer ? 1 : 0);
-          const totalScore = rawTotal !== undefined ? Number(rawTotal) : 1;
-          const reason = row['错因分析'] || row['errorReason'] || inferErrorReason(qContent + ' ' + sAnswer);
-          const kpName = row['知识点标签'] || row['knowledgePoint'] || row['知识点'] || findKnowledgePointId(qContent, kpOptions) || '';
+          const studentName = getField(row, ['学员姓名', 'studentName', 'student_name', '学生', '姓名', '学生姓名']) || '';
+          const qId = getField(row, ['题目ID', 'questionId', 'question_id', '题目', '题目编号', '题号']) || generateId();
+          const qContent = getField(row, ['题目内容', 'content', 'questionContent', 'question_content', '题目', '题干']) || `题目 ${qId}`;
+          const sAnswer = getField(row, ['学生答案', 'studentAnswer', 'student_answer', '作答', '用户答案', '考生作答']) || '';
+          const cAnswer = getField(row, ['正确答案', 'correctAnswer', 'correct_answer', '答案', '标准答案']) || '';
+          const rawScore = getField(row, ['得分', 'score', '实得分', '原始分', '分数']);
+          const rawTotal = getField(row, ['满分', 'totalScore', 'total_score', '总分', '题目分值', '满分值']);
+          const hasExplicitScore = rawScore !== undefined;
+          const hasExplicitTotal = rawTotal !== undefined;
+          const score = hasExplicitScore ? Number(rawScore) : (String(sAnswer).trim() === String(cAnswer).trim() ? 1 : 0);
+          const totalScore = hasExplicitTotal ? Number(rawTotal) : 1;
+          const reason = getField(row, ['错因分析', 'errorReason', 'error_reason', '错因', '错误原因']) || inferErrorReason(qContent + ' ' + sAnswer);
+          const kpName = getField(row, ['知识点标签', 'knowledgePoint', 'knowledge_point', '知识点', '考点']) || findKnowledgePointId(qContent, kpOptions) || '';
           const kp = kpOptions.find(k => k.name === kpName) || kpOptions.find(k => qContent.includes(k.name));
-          const isWrong = totalScore > 0 ? (score / totalScore) * 100 < passThreshold : sAnswer !== cAnswer;
+          let isWrong: boolean;
+          if (hasExplicitScore && hasExplicitTotal && totalScore > 0) {
+            isWrong = (score / totalScore) * 100 < passThreshold;
+          } else if (hasExplicitScore && !hasExplicitTotal && score > 0) {
+            isWrong = score < passThreshold;
+          } else {
+            isWrong = String(sAnswer).trim() !== String(cAnswer).trim();
+          }
 
           return {
             studentName,

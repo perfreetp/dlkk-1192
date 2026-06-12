@@ -3,6 +3,23 @@ import type { PracticeConfig, PracticePaper, Question } from '@/types';
 import { useQuestionStore } from './useQuestionStore';
 import { generateId } from '@/utils/calculation';
 
+interface PracticeHistoryEntry {
+  paperId: string;
+  paperTitle: string;
+  score: number;
+  totalQuestions: number;
+  correctCount: number;
+  createdAt: string;
+  finishedAt?: string;
+  parentPaperId?: string;
+  sourceType?: 'retry-wrong' | 'retry-similar' | 'retry-all' | 'original';
+  sourceKpIds?: string[];
+  sourceQuestionIndex?: number;
+  masteryDeltaMap?: Record<string, number>;
+  solvedQuestionIds?: string[];
+  wrongQuestionIds?: string[];
+}
+
 interface PracticeState {
   config: PracticeConfig;
   setConfig: (config: PracticeConfig) => void;
@@ -21,9 +38,11 @@ interface PracticeState {
     correctCount: number;
     sourceType: 'retry-wrong' | 'retry-similar' | 'retry-all';
     sourceQuestionIndex?: number;
+    sourceKpIds?: string[];
     createdAt: string;
   } | null;
-  generatePaper: () => void;
+  practiceHistory: PracticeHistoryEntry[];
+  generatePaper: (opts?: { strictKp?: boolean; titleHint?: string }) => void;
   startPractice: () => void;
   submitAnswer: (questionIndex: number, answer: number | string) => void;
   nextQuestion: () => void;
@@ -32,6 +51,7 @@ interface PracticeState {
   resetPractice: () => void;
   setPreviousPractice: (prev: PracticeState['previousPractice']) => void;
   clearPreviousPractice: () => void;
+  getPracticeChain: (paperId: string) => PracticeHistoryEntry[];
 }
 
 const defaultConfig: PracticeConfig = {
@@ -157,11 +177,34 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   score: 0,
   resultQuestions: [],
   previousPractice: null,
+  practiceHistory: [],
   setPreviousPractice: (prev) => set({ previousPractice: prev }),
   clearPreviousPractice: () => set({ previousPractice: null }),
 
-  generatePaper: () => {
-    const { config } = get();
+  getPracticeChain: (paperId) => {
+    const { practiceHistory } = get();
+    const byId = new Map(practiceHistory.map(h => [h.paperId, h]));
+    const chain: PracticeHistoryEntry[] = [];
+    let cur: PracticeHistoryEntry | undefined = byId.get(paperId);
+    while (cur) {
+      chain.unshift({ ...cur });
+      cur = cur.parentPaperId ? byId.get(cur.parentPaperId) : undefined;
+    }
+    const descendants: PracticeHistoryEntry[] = [];
+    let seed = [paperId];
+    while (seed.length > 0) {
+      const found = practiceHistory.filter(h => h.parentPaperId && seed.includes(h.parentPaperId));
+      if (found.length === 0) break;
+      descendants.push(...found.sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+      seed = found.map(f => f.paperId);
+    }
+    const seenIds = new Set(chain.map(c => c.paperId));
+    const extras = descendants.filter(d => !seenIds.has(d.paperId));
+    return [...chain, ...extras];
+  },
+
+  generatePaper: (opts) => {
+    const { config, previousPractice } = get();
     const { questions, errorQuestions } = useQuestionStore.getState();
 
     const studentErrorIds = new Set(
@@ -177,6 +220,8 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       if (t === 'answer') typeFilter.push('essay');
     });
 
+    const strictKp = opts?.strictKp || (previousPractice?.sourceType === 'retry-similar') || (previousPractice?.sourceType === 'retry-wrong');
+
     let pool = questions.filter(q => {
       const matchesSubject = q.subjectId === config.subjectId;
       const kpIds = q.knowledgePointIds || [q.knowledgePointId];
@@ -187,7 +232,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       return matchesSubject && matchesKp && matchesType;
     });
 
-    if (pool.length === 0) {
+    if (!strictKp && pool.length === 0) {
       pool = questions.filter(q =>
         q.subjectId === config.subjectId && typeFilter.includes(q.type)
       );
@@ -204,22 +249,56 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       .slice(0, Math.min(config.questionCount, pool.length))
       .map(w => w.question);
 
+    const sourceType = previousPractice?.sourceType;
+    const kpCount = config.knowledgePointIds.length;
+
+    let title = '';
+    if (opts?.titleHint) {
+      title = opts.titleHint;
+    } else if (sourceType === 'retry-similar' && previousPractice?.sourceQuestionIndex !== undefined) {
+      title = `同类强化练习（围绕第 ${Number(previousPractice.sourceQuestionIndex + 1)} 题的同类题`;
+    } else if (sourceType === 'retry-wrong') {
+      title = `错题知识点强化 ${kpCount} 个专项练习`;
+    } else if (kpCount > 0) {
+      title = `${kpCount} 个知识点专项练习`;
+    } else {
+      title = '智能综合练习';
+    }
+
+    const now = new Date().toISOString();
     const paper: PracticePaper = {
       id: `paper-${Date.now()}`,
-      title: `${config.knowledgePointIds.length} 个知识点专项练习`,
+      title,
       questions: selectedQuestions,
       estimatedTime: selectedQuestions.length * 3,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      sourceKpIds: config.knowledgePointIds.length > 0 ? [...config.knowledgePointIds] : undefined,
+      parentPaperId: previousPractice?.paperId || undefined,
     };
 
-    set({
-      generatedPaper: paper,
-      currentIndex: 0,
-      answers: new Array(selectedQuestions.length).fill(undefined),
-      resultQuestions: [],
-      isStarted: false,
-      isFinished: false,
-      score: 0,
+    set(state => {
+      const createdEntry: PracticeHistoryEntry = {
+        paperId: paper.id,
+        paperTitle: paper.title,
+        score: 0,
+        totalQuestions: paper.questions.length,
+        correctCount: 0,
+        createdAt: paper.createdAt,
+        parentPaperId: paper.parentPaperId,
+        sourceType: sourceType || 'original',
+        sourceKpIds: paper.sourceKpIds,
+        sourceQuestionIndex: previousPractice?.sourceQuestionIndex,
+      };
+      return {
+        generatedPaper: paper,
+        currentIndex: 0,
+        answers: new Array(selectedQuestions.length).fill(undefined),
+        resultQuestions: [],
+        isStarted: false,
+        isFinished: false,
+        score: 0,
+        practiceHistory: [...state.practiceHistory, createdEntry],
+      };
     });
   },
 
@@ -254,7 +333,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   finishPractice: () => {
-    const { answers, generatedPaper, config } = get();
+    const { answers, generatedPaper, config, previousPractice } = get();
     if (!generatedPaper) return;
 
     let correctCount = 0;
@@ -262,6 +341,12 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       const isCorrect = isAnswerCorrect(q, answers[idx]);
       if (isCorrect) correctCount++;
       return { isCorrect };
+    });
+
+    const solvedIds: string[] = [];
+    const wrongIds: string[] = [];
+    generatedPaper.questions.forEach((q, idx) => {
+      if (results[idx].isCorrect) solvedIds.push(q.id); else wrongIds.push(q.id);
     });
 
     const { addErrorQuestion, getMasteryRate, getErrorQuestionById } = useQuestionStore.getState();
@@ -310,11 +395,26 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       ? Math.round((correctCount / generatedPaper.questions.length) * 100)
       : 0;
 
-    set({
+    const finishedAt = new Date().toISOString();
+    const kpIds = generatedPaper.sourceKpIds || [...new Set(generatedPaper.questions.map(q => q.knowledgePointId).filter(Boolean))];
+    const masteryDeltaMap: Record<string, number> = {};
+    kpIds.forEach(kpid => {
+      const kpQs = generatedPaper.questions.filter(q => q.knowledgePointId === kpid);
+      if (kpQs.length === 0) return;
+      const kpCorrect = kpQs.filter((_, i) => results[generatedPaper.questions.indexOf(kpQs[0]) + i]?.isCorrect).length;
+      masteryDeltaMap[kpid] = Math.round((kpCorrect / kpQs.length) * 100);
+    });
+
+    set(state => ({
       isFinished: true,
       score,
       resultQuestions: results,
-    });
+      practiceHistory: state.practiceHistory.map(h =>
+        h.paperId === generatedPaper.id
+          ? { ...h, score, correctCount, finishedAt, solvedQuestionIds: solvedIds, wrongQuestionIds: wrongIds, masteryDeltaMap }
+          : h
+      ),
+    }));
   },
 
   resetPractice: () => {
