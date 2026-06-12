@@ -4,6 +4,7 @@ import { mockSubjects } from '@/data/mockSubjects';
 import { mockKnowledgePoints } from '@/data/mockKnowledgePoints';
 import { mockClasses } from '@/data/mockClasses';
 import { mockStudents } from '@/data/mockStudents';
+import { saveToStorage, loadFromStorage } from '@/utils/persist';
 
 interface KnowledgeTreeNode extends KnowledgePoint {
   children: KnowledgeTreeNode[];
@@ -25,7 +26,7 @@ interface KnowledgeState {
   getChildren: (kpId: string) => KnowledgePoint[];
   getRootNodes: (subjectId: string) => KnowledgePoint[];
   updateKnowledgePoint: (id: string, updates: Partial<KnowledgePoint>) => void;
-  addKnowledgePoint: (kp: Omit<KnowledgePoint, 'id'>) => void;
+  addKnowledgePoint: (kp: Omit<KnowledgePoint, 'id'>) => KnowledgePoint;
   deleteKnowledgePoint: (id: string) => void;
   getKnowledgePointById: (id: string) => KnowledgePoint | undefined;
   getSubjectById: (id: string) => Subject | undefined;
@@ -33,11 +34,13 @@ interface KnowledgeState {
   getStudentById: (id: string) => Student | undefined;
 }
 
+const persistKnowledgePoints = (data: KnowledgePoint[]) => saveToStorage('knowledgePoints', data);
+
 export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   subjects: mockSubjects,
   classes: mockClasses,
   students: mockStudents,
-  knowledgePoints: mockKnowledgePoints,
+  knowledgePoints: loadFromStorage('knowledgePoints', mockKnowledgePoints),
   selectedSubjectId: 'sub-1',
   selectedClassId: 'cls-1',
   setSelectedSubjectId: (id) => set({ selectedSubjectId: id }),
@@ -98,11 +101,13 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   },
 
   updateKnowledgePoint: (id, updates) => {
-    set(state => ({
-      knowledgePoints: state.knowledgePoints.map(kp =>
+    set(state => {
+      const updated = state.knowledgePoints.map(kp =>
         kp.id === id ? { ...kp, ...updates, updatedAt: new Date().toISOString() } : kp
-      ),
-    }));
+      );
+      persistKnowledgePoints(updated);
+      return { knowledgePoints: updated };
+    });
   },
 
   addKnowledgePoint: (kp) => {
@@ -112,13 +117,33 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    set(state => ({ knowledgePoints: [...state.knowledgePoints, newKp] }));
+    set(state => {
+      let updated = [...state.knowledgePoints, newKp];
+      updated = updated.map(item => {
+        if (newKp.prerequisites.includes(item.id)) {
+          return { ...item, successors: [...item.successors, newKp.id], updatedAt: new Date().toISOString() };
+        }
+        return item;
+      });
+      persistKnowledgePoints(updated);
+      return { knowledgePoints: updated };
+    });
+    return newKp;
   },
 
   deleteKnowledgePoint: (id) => {
-    set(state => ({
-      knowledgePoints: state.knowledgePoints.filter(kp => kp.id !== id),
-    }));
+    set(state => {
+      let updated = state.knowledgePoints.filter(kp => kp.id !== id);
+      updated = updated.map(kp => ({
+        ...kp,
+        prerequisites: kp.prerequisites.filter(pid => pid !== id),
+        successors: kp.successors.filter(sid => sid !== id),
+        parentId: kp.parentId === id ? undefined : kp.parentId,
+        updatedAt: new Date().toISOString(),
+      }));
+      persistKnowledgePoints(updated);
+      return { knowledgePoints: updated };
+    });
   },
 
   getKnowledgePointById: (id) => get().knowledgePoints.find(kp => kp.id === id),

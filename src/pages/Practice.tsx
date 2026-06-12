@@ -33,6 +33,7 @@ const Practice = () => {
     isStarted,
     isFinished,
     score,
+    resultQuestions,
     generatePaper,
     startPractice,
     submitAnswer,
@@ -48,6 +49,7 @@ const Practice = () => {
   const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>(
     initialKpId ? [initialKpId] : []
   );
+  const [textInputs, setTextInputs] = useState<Record<number, string>>({});
 
   const subjectKnowledgePoints = useMemo(() =>
     knowledgePoints.filter(kp => kp.subjectId === selectedSubjectId),
@@ -88,6 +90,7 @@ const Practice = () => {
 
   const handleStart = () => {
     if (!generatedPaper) return;
+    setTextInputs({});
     startPractice();
   };
 
@@ -96,19 +99,33 @@ const Practice = () => {
     submitAnswer(currentIndex, optionIndex);
   };
 
+  const handleTextInputChange = (value: string) => {
+    if (isFinished) return;
+    setTextInputs(prev => ({ ...prev, [currentIndex]: value }));
+    submitAnswer(currentIndex, value);
+  };
+
   const handleFinish = () => {
+    Object.entries(textInputs).forEach(([idxStr, value]) => {
+      const idx = Number(idxStr);
+      if (answers[idx] === undefined || answers[idx] === '') {
+        submitAnswer(idx, value);
+      }
+    });
     finishPractice();
   };
 
   const handleRetry = () => {
+    setTextInputs({});
     resetPractice();
   };
 
   const getCurrentAnswer = () => answers[currentIndex];
-  const isCurrentAnswered = getCurrentAnswer() !== undefined;
+  const isCurrentAnswered = getCurrentAnswer() !== undefined && getCurrentAnswer() !== '';
   const isCurrentCorrect = isFinished && currentQuestion
-    ? getCurrentAnswer() === currentQuestion.correctAnswer
+    ? resultQuestions[currentIndex]?.isCorrect ?? null
     : null;
+  const currentTextInput = textInputs[currentIndex] ?? (typeof getCurrentAnswer() === 'number' ? '' : String(getCurrentAnswer() ?? ''));
 
   return (
     <div className="space-y-6">
@@ -307,7 +324,7 @@ const Practice = () => {
               <button
                 onClick={handleGenerate}
                 disabled={selectedKnowledgeIds.length === 0 || config.questionTypes.length === 0}
-                className="w-full btn-primary mt-6 flex items-center justify-center gap-2"
+                className="w-full btn-primary mt-6 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Play className="w-4 h-4" />
                 智能组卷
@@ -349,19 +366,25 @@ const Practice = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div className="text-center p-4 bg-blue-50 rounded-xl">
               <p className="text-2xl font-bold text-blue-600">
-                {generatedPaper.questions.filter(q => q.difficulty === 'easy').length}
+                {generatedPaper.questions.filter(q =>
+                  q.difficulty === 'easy' || (typeof q.difficulty === 'number' && q.difficulty <= 1)
+                ).length}
               </p>
               <p className="text-xs text-blue-500 mt-1">简单题</p>
             </div>
             <div className="text-center p-4 bg-amber-50 rounded-xl">
               <p className="text-2xl font-bold text-amber-600">
-                {generatedPaper.questions.filter(q => q.difficulty === 'medium').length}
+                {generatedPaper.questions.filter(q =>
+                  q.difficulty === 'medium' || (typeof q.difficulty === 'number' && q.difficulty >= 2 && q.difficulty <= 3)
+                ).length}
               </p>
               <p className="text-xs text-amber-500 mt-1">中等题</p>
             </div>
             <div className="text-center p-4 bg-red-50 rounded-xl">
               <p className="text-2xl font-bold text-red-600">
-                {generatedPaper.questions.filter(q => q.difficulty === 'hard').length}
+                {generatedPaper.questions.filter(q =>
+                  q.difficulty === 'hard' || (typeof q.difficulty === 'number' && q.difficulty >= 4)
+                ).length}
               </p>
               <p className="text-xs text-red-500 mt-1">困难题</p>
             </div>
@@ -408,7 +431,7 @@ const Practice = () => {
             </div>
             <div className="flex items-center gap-2 text-gray-500">
               <Clock className="w-4 h-4" />
-              <span className="text-sm">已答题 {answers.filter(a => a !== undefined).length} 题</span>
+              <span className="text-sm">已答题 {answers.filter(a => a !== undefined && a !== '').length} 题</span>
             </div>
           </div>
 
@@ -426,16 +449,17 @@ const Practice = () => {
               </h2>
             </div>
 
-            {currentQuestion.type === 'choice' && currentQuestion.options && (
+            {(currentQuestion.type === 'choice' || currentQuestion.type === 'single') && currentQuestion.options && (
               <div className="space-y-3">
                 {currentQuestion.options.map((option, optIndex) => {
                   const isSelected = getCurrentAnswer() === optIndex;
                   let optionClass = 'bg-gray-50 border-2 border-gray-100 hover:bg-gray-100';
+                  const correctIdx = Number(currentQuestion.correctAnswer);
 
                   if (isFinished) {
-                    if (optIndex === currentQuestion.correctAnswer) {
+                    if (optIndex === correctIdx) {
                       optionClass = 'bg-emerald-50 border-2 border-emerald-500';
-                    } else if (isSelected && optIndex !== currentQuestion.correctAnswer) {
+                    } else if (isSelected && optIndex !== correctIdx) {
                       optionClass = 'bg-red-50 border-2 border-red-500';
                     } else {
                       optionClass = 'bg-gray-50 border-2 border-gray-100 opacity-50';
@@ -453,7 +477,7 @@ const Practice = () => {
                     >
                       <span className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
                         isFinished
-                          ? optIndex === currentQuestion.correctAnswer
+                          ? optIndex === correctIdx
                             ? 'bg-emerald-500 text-white'
                             : isSelected
                             ? 'bg-red-500 text-white'
@@ -462,9 +486,9 @@ const Practice = () => {
                           ? 'bg-primary-500 text-white'
                           : 'bg-white text-gray-600 border border-gray-200'
                       }`}>
-                        {isFinished && optIndex === currentQuestion.correctAnswer ? (
+                        {isFinished && optIndex === correctIdx ? (
                           <Check className="w-4 h-4" />
-                        ) : isFinished && isSelected && optIndex !== currentQuestion.correctAnswer ? (
+                        ) : isFinished && isSelected && optIndex !== correctIdx ? (
                           <X className="w-4 h-4" />
                         ) : (
                           String.fromCharCode(65 + optIndex)
@@ -483,37 +507,58 @@ const Practice = () => {
                   type="text"
                   placeholder="请输入答案..."
                   className="input text-lg"
+                  value={currentTextInput}
+                  onChange={(e) => handleTextInputChange(e.target.value)}
                   disabled={isFinished}
                 />
                 {isFinished && (
-                  <div className="mt-4 p-4 bg-emerald-50 rounded-xl">
-                    <p className="text-sm text-emerald-700">
-                      <span className="font-medium">正确答案：</span>
-                      {currentQuestion.correctAnswer}
+                  <div className={`mt-4 p-4 rounded-xl ${
+                    isCurrentCorrect ? 'bg-emerald-50' : 'bg-red-50'
+                  }`}>
+                    <p className={`text-sm ${
+                      isCurrentCorrect ? 'text-emerald-700' : 'text-red-700'
+                    }`}>
+                      <span className="font-medium">
+                        {isCurrentCorrect ? '回答正确！' : '回答错误。'} 正确答案：
+                      </span>
+                      {currentQuestion.answer}
                     </p>
                   </div>
                 )}
               </div>
             )}
 
-            {currentQuestion.type === 'answer' && (
+            {currentQuestion.type === 'answer' || currentQuestion.type === 'essay' && (
               <div>
                 <textarea
                   placeholder="请输入答案..."
                   rows={5}
                   className="input"
+                  value={currentTextInput}
+                  onChange={(e) => handleTextInputChange(e.target.value)}
                   disabled={isFinished}
                 />
                 {isFinished && (
-                  <div className="mt-4 p-4 bg-blue-50 rounded-xl">
-                    <p className="text-sm text-blue-700 font-medium mb-1">参考答案：</p>
-                    <p className="text-sm text-blue-600">{currentQuestion.answerExplanation}</p>
+                  <div className={`mt-4 p-4 rounded-xl ${
+                    isCurrentCorrect ? 'bg-emerald-50' : 'bg-blue-50'
+                  }`}>
+                    <p className={`text-sm font-medium mb-1 ${
+                      isCurrentCorrect ? 'text-emerald-700' : 'text-blue-700'
+                    }`}>
+                      {isCurrentCorrect ? '回答正确！' : '参考答案：'}
+                    </p>
+                    {!isCurrentCorrect && (
+                      <p className="text-sm text-blue-600">{currentQuestion.answer}</p>
+                    )}
+                    <p className="text-sm text-blue-600 mt-2 pt-2 border-t border-blue-100">
+                      解析：{currentQuestion.analysis}
+                    </p>
                   </div>
                 )}
               </div>
             )}
 
-            {isFinished && currentQuestion.errorReason && (
+            {isFinished && !isCurrentCorrect && currentQuestion.errorReason && (
               <div className="mt-4 p-4 bg-warning-50 rounded-xl">
                 <p className="text-sm text-warning-700 flex items-center gap-2">
                   <AlertCircle className="w-4 h-4" />
@@ -534,7 +579,7 @@ const Practice = () => {
               上一题
             </button>
 
-            <div className="flex gap-1">
+            <div className="flex gap-1 max-w-md overflow-x-auto pb-1">
               {availableQuestions.map((_, idx) => (
                 <button
                   key={idx}
@@ -542,11 +587,13 @@ const Practice = () => {
                     while (currentIndex > idx) prevQuestion();
                     while (currentIndex < idx) nextQuestion();
                   }}
-                  className={`w-8 h-8 rounded-lg text-sm font-medium transition-all ${
+                  className={`w-8 h-8 shrink-0 rounded-lg text-sm font-medium transition-all ${
                     idx === currentIndex
                       ? 'bg-primary-900 text-white'
-                      : answers[idx] !== undefined
-                      ? 'bg-emerald-100 text-emerald-700'
+                      : answers[idx] !== undefined && answers[idx] !== ''
+                      ? resultQuestions[idx]?.isCorrect
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-red-100 text-red-700'
                       : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                   }`}
                 >
@@ -593,23 +640,19 @@ const Practice = () => {
             <div className="grid grid-cols-3 gap-4 mt-8">
               <div className="p-4 bg-emerald-50 rounded-xl">
                 <p className="text-2xl font-bold text-emerald-600">
-                  {generatedPaper?.questions.filter((_, idx) =>
-                    answers[idx] === generatedPaper?.questions[idx].correctAnswer
-                  ).length || 0}
+                  {resultQuestions.filter(r => r.isCorrect).length}
                 </p>
                 <p className="text-xs text-emerald-500 mt-1">答对</p>
               </div>
               <div className="p-4 bg-red-50 rounded-xl">
                 <p className="text-2xl font-bold text-red-600">
-                  {generatedPaper?.questions.filter((_, idx) =>
-                    answers[idx] !== undefined && answers[idx] !== generatedPaper?.questions[idx].correctAnswer
-                  ).length || 0}
+                  {resultQuestions.filter(r => !r.isCorrect).length}
                 </p>
                 <p className="text-xs text-red-500 mt-1">答错</p>
               </div>
               <div className="p-4 bg-gray-50 rounded-xl">
                 <p className="text-2xl font-bold text-gray-600">
-                  {answers.filter(a => a === undefined).length}
+                  {answers.filter(a => a === undefined || a === '').length}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">未答</p>
               </div>

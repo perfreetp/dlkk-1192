@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Brain,
@@ -46,6 +46,12 @@ const KnowledgeMap = () => {
   const [newNodeParentId, setNewNodeParentId] = useState<string | null>(null);
   const [newNodeDescription, setNewNodeDescription] = useState('');
   const [newNodePrerequisites, setNewNodePrerequisites] = useState<string[]>([]);
+  const [editNodeName, setEditNodeName] = useState('');
+  const [editNodeLevel, setEditNodeLevel] = useState<1 | 2 | 3>(2);
+  const [editNodeParentId, setEditNodeParentId] = useState<string | null>(null);
+  const [editNodeDescription, setEditNodeDescription] = useState('');
+  const [editNodePrerequisites, setEditNodePrerequisites] = useState<string[]>([]);
+  const [editNodeSuccessors, setEditNodeSuccessors] = useState<string[]>([]);
 
   const subjectKnowledgePoints = knowledgePoints.filter(
     kp => kp.subjectId === selectedSubjectId
@@ -75,22 +81,79 @@ const KnowledgeMap = () => {
 
     addKnowledgePoint(newKp);
 
-    if (newNodePrerequisites.length > 0) {
-      newNodePrerequisites.forEach(preId => {
-        const preKp = knowledgePoints.find(kp => kp.id === preId);
-        if (preKp) {
-          updateKnowledgePoint(preId, {
-            successors: [...preKp.successors, newKp.id],
-          });
-        }
-      });
-    }
-
     setShowAddModal(false);
     setNewNodeName('');
     setNewNodeDescription('');
     setNewNodeParentId(null);
     setNewNodePrerequisites([]);
+  };
+
+  const editingNodeData = editingNode
+    ? knowledgePoints.find(kp => kp.id === editingNode)
+    : null;
+
+  useEffect(() => {
+    if (editingNode && editingNodeData) {
+      setEditNodeName(editingNodeData.name);
+      setEditNodeLevel(editingNodeData.level as 1 | 2 | 3);
+      setEditNodeParentId(editingNodeData.parentId || null);
+      setEditNodeDescription(editingNodeData.description);
+      setEditNodePrerequisites(editingNodeData.prerequisites);
+      setEditNodeSuccessors(editingNodeData.successors);
+    }
+  }, [editingNode, editingNodeData?.id]);
+
+  const handleSaveEdit = () => {
+    if (!editingNode || !editNodeName.trim()) return;
+
+    const oldPrereqs = editingNodeData?.prerequisites || [];
+    const oldSuccessors = editingNodeData?.successors || [];
+
+    updateKnowledgePoint(editingNode, {
+      name: editNodeName.trim(),
+      level: editNodeLevel,
+      parentId: editNodeParentId,
+      description: editNodeDescription.trim() || `${editNodeName}知识点`,
+      prerequisites: editNodePrerequisites,
+      successors: editNodeSuccessors,
+    });
+
+    const addedPrereqs = editNodePrerequisites.filter(id => !oldPrereqs.includes(id));
+    const removedPrereqs = oldPrereqs.filter(id => !editNodePrerequisites.includes(id));
+    const addedSuccessors = editNodeSuccessors.filter(id => !oldSuccessors.includes(id));
+    const removedSuccessors = oldSuccessors.filter(id => !editNodeSuccessors.includes(id));
+
+    addedPrereqs.forEach(preId => {
+      const preKp = knowledgePoints.find(kp => kp.id === preId);
+      if (preKp && !preKp.successors.includes(editingNode)) {
+        updateKnowledgePoint(preId, { successors: [...preKp.successors, editingNode] });
+      }
+    });
+    removedPrereqs.forEach(preId => {
+      const preKp = knowledgePoints.find(kp => kp.id === preId);
+      if (preKp) {
+        updateKnowledgePoint(preId, { successors: preKp.successors.filter(sid => sid !== editingNode) });
+      }
+    });
+    addedSuccessors.forEach(sucId => {
+      const sucKp = knowledgePoints.find(kp => kp.id === sucId);
+      if (sucKp && !sucKp.prerequisites.includes(editingNode)) {
+        updateKnowledgePoint(sucId, { prerequisites: [...sucKp.prerequisites, editingNode] });
+      }
+    });
+    removedSuccessors.forEach(sucId => {
+      const sucKp = knowledgePoints.find(kp => kp.id === sucId);
+      if (sucKp) {
+        updateKnowledgePoint(sucId, { prerequisites: sucKp.prerequisites.filter(pid => pid !== editingNode) });
+      }
+    });
+
+    setEditingNode(null);
+    setEditNodeName('');
+    setEditNodeDescription('');
+    setEditNodeParentId(null);
+    setEditNodePrerequisites([]);
+    setEditNodeSuccessors([]);
   };
 
   const handleDeleteNode = (id: string) => {
@@ -472,6 +535,160 @@ const KnowledgeMap = () => {
                 className="flex-1 btn-primary"
               >
                 添加
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingNode && editingNodeData && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 animate-slide-up max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">编辑知识点</h2>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  知识点名称
+                </label>
+                <input
+                  type="text"
+                  value={editNodeName}
+                  onChange={(e) => setEditNodeName(e.target.value)}
+                  className="input"
+                  placeholder="请输入知识点名称"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  描述
+                </label>
+                <textarea
+                  value={editNodeDescription}
+                  onChange={(e) => setEditNodeDescription(e.target.value)}
+                  className="input"
+                  rows={3}
+                  placeholder="请输入知识点描述（可选）"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    层级
+                  </label>
+                  <select
+                    value={editNodeLevel}
+                    onChange={(e) => setEditNodeLevel(Number(e.target.value) as 1 | 2 | 3)}
+                    className="select"
+                  >
+                    <option value={1}>Level 1 - 大概念</option>
+                    <option value={2}>Level 2 - 知识点</option>
+                    <option value={3}>Level 3 - 细分点</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    父知识点
+                  </label>
+                  <select
+                    value={editNodeParentId || ''}
+                    onChange={(e) => setEditNodeParentId(e.target.value || null)}
+                    className="select"
+                  >
+                    <option value="">无父知识点</option>
+                    {subjectKnowledgePoints
+                      .filter(kp => kp.id !== editingNode && kp.level < editNodeLevel)
+                      .map(kp => (
+                        <option key={kp.id} value={kp.id}>{kp.name}</option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  前置知识点（可多选）
+                </label>
+                <div className="max-h-32 overflow-y-auto space-y-1 p-2 border border-gray-200 rounded-lg">
+                  {subjectKnowledgePoints
+                    .filter(kp => kp.id !== editingNode)
+                    .map(kp => (
+                      <label
+                        key={kp.id}
+                        className="flex items-center gap-2 p-1.5 rounded hover:bg-gray-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editNodePrerequisites.includes(kp.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setEditNodePrerequisites([...editNodePrerequisites, kp.id]);
+                            } else {
+                              setEditNodePrerequisites(editNodePrerequisites.filter(id => id !== kp.id));
+                            }
+                          }}
+                          className="rounded text-primary-600 focus:ring-primary-500"
+                        />
+                        <span className="text-sm text-gray-700">{kp.name}</span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  后续知识点（可多选）
+                </label>
+                <div className="max-h-32 overflow-y-auto space-y-1 p-2 border border-gray-200 rounded-lg">
+                  {subjectKnowledgePoints
+                    .filter(kp => kp.id !== editingNode)
+                    .map(kp => (
+                      <label
+                        key={kp.id}
+                        className="flex items-center gap-2 p-1.5 rounded hover:bg-gray-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editNodeSuccessors.includes(kp.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setEditNodeSuccessors([...editNodeSuccessors, kp.id]);
+                            } else {
+                              setEditNodeSuccessors(editNodeSuccessors.filter(id => id !== kp.id));
+                            }
+                          }}
+                          className="rounded text-primary-600 focus:ring-primary-500"
+                        />
+                        <span className="text-sm text-gray-700">{kp.name}</span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setEditingNode(null);
+                  setEditNodeName('');
+                  setEditNodeDescription('');
+                  setEditNodeParentId(null);
+                  setEditNodePrerequisites([]);
+                  setEditNodeSuccessors([]);
+                }}
+                className="flex-1 btn-secondary"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={!editNodeName.trim()}
+                className="flex-1 btn-primary"
+              >
+                保存
               </button>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
   Users,
   FileText,
@@ -13,6 +13,9 @@ import {
   TrendingUp,
   BarChart3,
   MessageSquare,
+  Upload,
+  X,
+  Check,
 } from 'lucide-react';
 import { StatusBadge, DifficultyBadge } from '@/components/ui/Badge';
 import { ComparisonChart } from '@/components/charts/ComparisonChart';
@@ -22,17 +25,44 @@ import { useKnowledgeStore } from '@/store/useKnowledgeStore';
 import { useReportStore } from '@/store/useReportStore';
 import { formatDate } from '@/utils/date';
 import { generateParentReport } from '@/utils/export';
+import { generateId } from '@/utils/calculation';
+import type { ErrorReason, ErrorQuestion, Question } from '@/types';
+
+const errorReasonKeywords: Record<ErrorReason, string[]> = {
+  '概念不清': ['概念', '定义', '不理解', '混淆', '不知道'],
+  '计算错误': ['计算', '算错', '加减', '乘除', '运算'],
+  '审题失误': ['看错', '没看清', '题目', '理解错', '条件'],
+  '方法不当': ['方法', '思路', '解法', '不会做', '技巧'],
+  '知识遗忘': ['忘了', '不记得', '遗忘', '背错', '记错'],
+  '其他': [],
+};
+
+const inferErrorReason = (text: string): ErrorReason => {
+  for (const [reason, kws] of Object.entries(errorReasonKeywords)) {
+    if (kws.some(kw => text.includes(kw))) return reason as ErrorReason;
+  }
+  return '概念不清';
+};
+
+const findKnowledgePointId = (text: string, kps: Array<{ id: string; name: string }>): string | undefined => {
+  for (const kp of kps) {
+    if (text.includes(kp.name)) return kp.id;
+  }
+  return undefined;
+};
 
 const TeacherWorkbench = () => {
   const { currentUser } = useAuthStore();
-  const { classes, students, selectedClassId, setSelectedClassId } = useKnowledgeStore();
-  const { errorQuestions, getQuestionById, getMasteryRate, batchUpdateTags } = useQuestionStore();
+  const { classes, students, selectedClassId, setSelectedClassId, knowledgePoints } = useKnowledgeStore();
+  const { errorQuestions, getQuestionById, getMasteryRate, batchUpdateTags, batchImportErrorQuestions, questions, addQuestion, batchAddQuestions } = useQuestionStore();
   const {
     getClassMastery,
     getStudentMastery,
     getCommentTasks,
     completeCommentTask,
     getErrorDistribution,
+    pushCommentTask,
+    batchPushCommentTasks,
   } = useReportStore();
 
   const teacherId = currentUser?.id || 'tea-1';
@@ -40,6 +70,19 @@ const TeacherWorkbench = () => {
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'tasks' | 'import'>('overview');
   const [searchText, setSearchText] = useState('');
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+  const [taskToast, setTaskToast] = useState<{ type: 'success' | 'info' | 'error'; message: string } | null>(null);
+  const [importPreview, setImportPreview] = useState<Array<{
+    studentName: string;
+    questionId: string;
+    questionContent: string;
+    studentAnswer: string;
+    correctAnswer: string;
+    isWrong: boolean;
+    errorReason: string;
+    knowledgePointName: string;
+  }>>([]);
+  const [importResult, setImportResult] = useState<{ total: number; added: number; skipped: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const classStudents = useMemo(() =>
     students.filter(s => s.classId === selectedClassId),
@@ -66,25 +109,31 @@ const TeacherWorkbench = () => {
     ? errorQuestions.filter(eq => eq.studentId === selectedStudentId)
     : [];
 
+  const showToast = (type: 'success' | 'info' | 'error', message: string) => {
+    setTaskToast({ type, message });
+    setTimeout(() => setTaskToast(null), 3000);
+  };
+
   const handlePushTask = (studentId: string, knowledgePointId: string) => {
-    const newTask = {
-      id: `task-${Date.now()}`,
-      teacherId,
-      studentId,
-      knowledgePointId,
-      type: 'concept' as const,
-      title: '知识点讲评',
-      description: '请关注该知识点的掌握情况，及时进行针对性讲评',
-      status: 'pending' as const,
-      priority: 'medium' as const,
-      createdAt: new Date().toISOString(),
-      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    };
-    alert('讲评任务已推送！');
+    if (!knowledgePointId) {
+      showToast('error', '缺少知识点信息，无法推送');
+      return;
+    }
+    const existing = pendingTasks.find(
+      t => t.studentId === studentId && t.knowledgePointId === knowledgePointId
+    );
+    if (existing) {
+      showToast('info', '该学员此知识点已有待处理的讲评任务');
+      return;
+    }
+    const task = pushCommentTask(teacherId, studentId, knowledgePointId);
+    showToast('success', `已推送给 ${students.find(s => s.id === studentId)?.name}：${task.title}`);
   };
 
   const handleCompleteTask = (taskId: string) => {
     completeCommentTask(taskId);
+    const studentName = students.find(s => s.id === commentTasks.find(t => t.id === taskId)?.studentId)?.name;
+    showToast('success', `${studentName} 的讲评任务已标记完成`);
   };
 
   const handleExportParentReport = (student: typeof selectedStudent) => {
@@ -100,12 +149,30 @@ const TeacherWorkbench = () => {
     a.download = `${student.name}家长沟通报告.txt`;
     a.click();
     URL.revokeObjectURL(url);
+    showToast('success', `${student.name} 的家长报告已导出`);
   };
 
   const handleBatchPush = () => {
-    if (pendingTasks.length > 0) {
-      alert(`已推送 ${pendingTasks.length} 条讲评任务！`);
+    const weakStudentsData: Array<{ studentId: string; knowledgePointId: string }> = [];
+    classStudents.forEach(student => {
+      const weakKps = knowledgePoints
+        .filter(kp => kp.subjectId === useKnowledgeStore.getState().selectedSubjectId)
+        .filter(kp => getMasteryRate(kp.id, student.id) < 50);
+      weakKps.slice(0, 2).forEach(kp => {
+        const exists = pendingTasks.some(
+          t => t.studentId === student.id && t.knowledgePointId === kp.id
+        );
+        if (!exists) {
+          weakStudentsData.push({ studentId: student.id, knowledgePointId: kp.id });
+        }
+      });
+    });
+    if (weakStudentsData.length === 0) {
+      showToast('info', '没有需要批量推送的新任务');
+      return;
     }
+    const results = batchPushCommentTasks(teacherId, weakStudentsData);
+    showToast('success', `批量推送完成：共 ${results.length} 条任务`);
   };
 
   const distributionData = useMemo(() => {
@@ -113,8 +180,161 @@ const TeacherWorkbench = () => {
     return Object.entries(dist).map(([name, value]) => ({ name, value }));
   }, [getErrorDistribution, selectedClassId]);
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target?.result as string;
+        let parsed: any[] = [];
+
+        if (file.name.endsWith('.json')) {
+          parsed = JSON.parse(text);
+        } else if (file.name.endsWith('.csv')) {
+          const lines = text.split(/\r?\n/).filter(l => l.trim());
+          const headers = lines[0].split(',').map(h => h.trim());
+          parsed = lines.slice(1).map(line => {
+            const values = line.split(',');
+            const obj: Record<string, string> = {};
+            headers.forEach((h, i) => {
+              obj[h] = (values[i] || '').trim();
+            });
+            return obj;
+          });
+        } else if (file.name.endsWith('.txt')) {
+          const lines = text.split(/\r?\n/).filter(l => l.trim());
+          const headers = lines[0].split(/\t|  +/).map(h => h.trim());
+          parsed = lines.slice(1).map(line => {
+            const values = line.split(/\t|  +/);
+            const obj: Record<string, string> = {};
+            headers.forEach((h, i) => {
+              obj[h] = (values[i] || '').trim();
+            });
+            return obj;
+          });
+        } else {
+          showToast('error', '不支持的文件格式，请使用 JSON/CSV/TXT');
+          return;
+        }
+
+        const kpOptions = knowledgePoints.map(kp => ({ id: kp.id, name: kp.name }));
+        const preview = parsed.map((row: any) => {
+          const studentName = row['学员姓名'] || row['studentName'] || row['学生'] || '';
+          const qId = row['题目ID'] || row['questionId'] || row['题目'] || generateId();
+          const qContent = row['题目内容'] || row['content'] || row['题目'] || `题目 ${qId}`;
+          const sAnswer = row['学生答案'] || row['studentAnswer'] || row['作答'] || '';
+          const cAnswer = row['正确答案'] || row['correctAnswer'] || row['答案'] || '';
+          const score = Number(row['得分'] || row['score'] || sAnswer === cAnswer ? 1 : 0);
+          const totalScore = Number(row['满分'] || row['totalScore'] || row['总分'] || 1);
+          const reason = row['错因分析'] || row['errorReason'] || inferErrorReason(qContent + ' ' + sAnswer);
+          const kpName = row['知识点标签'] || row['knowledgePoint'] || row['知识点'] || findKnowledgePointId(qContent, kpOptions) || '';
+          const kp = kpOptions.find(k => k.name === kpName) || kpOptions.find(k => qContent.includes(k.name));
+
+          return {
+            studentName,
+            questionId: String(qId),
+            questionContent: qContent,
+            studentAnswer: sAnswer,
+            correctAnswer: cAnswer,
+            isWrong: score < totalScore * 0.6,
+            errorReason: reason,
+            knowledgePointName: kp?.name || kpName,
+          };
+        });
+
+        setImportPreview(preview);
+        setImportResult(null);
+        showToast('success', `文件解析完成：共 ${preview.length} 条记录`);
+      } catch (err) {
+        console.error(err);
+        showToast('error', '文件解析失败，请检查格式');
+      }
+    };
+    reader.readAsText(file, 'UTF-8');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleConfirmImport = () => {
+    const wrongRecords = importPreview.filter(r => r.isWrong);
+    const toImport: Array<Omit<ErrorQuestion, 'id'>> = [];
+    const newQuestionsToAdd: Array<Omit<Question, 'id'>> = [];
+
+    wrongRecords.forEach(record => {
+      const student = students.find(s => s.name === record.studentName);
+      if (!student) return;
+
+      let question = questions.find(q => q.id === record.questionId);
+      const kp = knowledgePoints.find(k => k.name === record.knowledgePointName);
+
+      if (!question) {
+        const qKp = kp || knowledgePoints[0];
+        question = {
+          id: record.questionId,
+          content: record.questionContent,
+          type: 'fill',
+          options: [],
+          correctAnswer: record.correctAnswer,
+          answer: record.correctAnswer,
+          analysis: `参考答案：${record.correctAnswer}`,
+          answerExplanation: record.correctAnswer,
+          difficulty: 3,
+          knowledgePointId: qKp.id,
+          knowledgePointIds: [qKp.id],
+          subjectId: qKp.subjectId,
+        } as Question;
+        newQuestionsToAdd.push(question);
+      }
+
+      const existing = errorQuestions.find(
+        eq => eq.studentId === student.id && eq.questionId === record.questionId
+      );
+      if (existing) return;
+
+      toImport.push({
+        studentId: student.id,
+        questionId: question.id,
+        knowledgePointId: kp?.id || question.knowledgePointId,
+        wrongAnswer: record.studentAnswer,
+        errorReason: (record.errorReason as any) || inferErrorReason(record.studentAnswer + ' ' + record.questionContent),
+        errorDate: new Date().toISOString().split('T')[0],
+        correctionStatus: 'pending',
+        nextReviewDate: new Date().toISOString().split('T')[0],
+        reviewCount: 0,
+        masteryRate: kp ? getMasteryRate(kp.id, student.id) : 40,
+        sourceExam: '导入考试',
+      });
+    });
+
+    if (newQuestionsToAdd.length > 0) {
+      batchAddQuestions(newQuestionsToAdd);
+    }
+
+    batchImportErrorQuestions(toImport);
+
+    setImportResult({
+      total: importPreview.length,
+      added: toImport.length,
+      skipped: importPreview.length - toImport.length,
+    });
+    showToast('success', `导入完成：新增 ${toImport.length} 道错题`);
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {taskToast && (
+        <div className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg animate-slide-up ${
+          taskToast.type === 'success' ? 'bg-emerald-500 text-white' :
+          taskToast.type === 'info' ? 'bg-blue-500 text-white' :
+          'bg-red-500 text-white'
+        }`}>
+          {taskToast.type === 'success' ? <Check className="w-5 h-5" /> :
+           taskToast.type === 'error' ? <X className="w-5 h-5" /> :
+           <Bell className="w-5 h-5" />}
+          <span className="font-medium text-sm">{taskToast.message}</span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">教师工作台</h1>
@@ -444,6 +664,7 @@ const TeacherWorkbench = () => {
                             <button
                               onClick={() => handlePushTask(selectedStudent.id, eq.knowledgePointId)}
                               className="p-2 text-gray-400 hover:text-accent-600 hover:bg-accent-50 rounded-lg transition-colors"
+                              title="推送讲评任务"
                             >
                               <Send className="w-4 h-4" />
                             </button>
@@ -487,6 +708,7 @@ const TeacherWorkbench = () => {
                             <button
                               onClick={() => handlePushTask(selectedStudent.id, kp.id)}
                               className="p-1.5 text-gray-400 hover:text-accent-600 hover:bg-accent-50 rounded transition-colors"
+                              title="推送讲评任务"
                             >
                               <Send className="w-3.5 h-3.5" />
                             </button>
@@ -527,7 +749,7 @@ const TeacherWorkbench = () => {
                 className="btn-accent flex items-center gap-2"
               >
                 <Send className="w-4 h-4" />
-                批量推送
+                批量推送薄弱学员任务
               </button>
             )}
           </div>
@@ -566,19 +788,25 @@ const TeacherWorkbench = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4 text-sm text-gray-500 mb-4">
+                  <div className="flex items-center gap-4 text-sm text-gray-500 mb-4 flex-wrap">
                     <span className="flex items-center gap-1">
                       <Users className="w-4 h-4" />
                       {student?.name}
                     </span>
                     <span className="flex items-center gap-1">
                       <BookOpen className="w-4 h-4" />
-                      {kp?.name}
+                      {kp?.name || '未指定'}
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock className="w-4 h-4" />
-                      {formatDate(task.dueDate)}
+                      {task.dueDate ? formatDate(task.dueDate) : '无截止日期'}
                     </span>
+                    {task.completedAt && (
+                      <span className="flex items-center gap-1 text-emerald-600">
+                        <CheckCircle className="w-4 h-4" />
+                        {formatDate(task.completedAt)} 完成
+                      </span>
+                    )}
                   </div>
 
                   {task.status === 'pending' && (
@@ -590,7 +818,15 @@ const TeacherWorkbench = () => {
                         <CheckCircle className="w-4 h-4" />
                         标记已完成
                       </button>
-                      <button className="btn-secondary">查看详情</button>
+                      <button
+                        onClick={() => {
+                          setSelectedStudentId(task.studentId);
+                          setActiveTab('students');
+                        }}
+                        className="btn-secondary"
+                      >
+                        查看详情
+                      </button>
                     </div>
                   )}
                 </div>
@@ -602,7 +838,7 @@ const TeacherWorkbench = () => {
                 <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gray-100 flex items-center justify-center">
                   <Bell className="w-10 h-10 text-gray-300" />
                 </div>
-                <p className="text-gray-500">暂无讲评任务</p>
+                <p className="text-gray-500">暂无讲评任务，可在学员列表推送任务</p>
               </div>
             )}
           </div>
@@ -613,25 +849,137 @@ const TeacherWorkbench = () => {
         <div className="card">
           <h3 className="font-bold text-gray-800 mb-4">导入考试结果</h3>
           <p className="text-gray-500 mb-6">
-            支持 Excel 格式的考试结果导入，系统将自动归类错题并关联知识点。
+            支持 Excel (CSV)、JSON、TXT 格式的考试结果导入，系统将自动归类错题并关联知识点。
           </p>
 
-          <div className="border-2 border-dashed border-gray-200 rounded-xl p-12 text-center hover:border-primary-400 transition-colors">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.csv,.txt"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+
+          <div
+            className="border-2 border-dashed border-gray-200 rounded-xl p-12 text-center hover:border-primary-400 hover:bg-primary-50/30 transition-colors cursor-pointer"
+            onClick={() => fileInputRef.current?.click()}
+          >
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-primary-100 flex items-center justify-center">
-              <FileText className="w-8 h-8 text-primary-600" />
+              <Upload className="w-8 h-8 text-primary-600" />
             </div>
             <p className="text-gray-700 font-medium mb-2">点击或拖拽文件到此处</p>
-            <p className="text-sm text-gray-400 mb-4">支持 .xlsx, .xls 格式</p>
-            <button className="btn-primary">选择文件</button>
+            <p className="text-sm text-gray-400 mb-4">支持 .json, .csv, .txt 格式</p>
+            <button
+              className="btn-primary"
+              onClick={(e) => {
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+            >
+              选择文件
+            </button>
           </div>
+
+          {importPreview.length > 0 && (
+            <div className="mt-6">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-medium text-gray-700">
+                  数据预览 ({importPreview.length} 条记录，
+                  <span className="text-red-500"> 错题 {importPreview.filter(r => r.isWrong).length} 道</span>)
+                </h4>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setImportPreview([]);
+                      setImportResult(null);
+                    }}
+                    className="btn-secondary"
+                  >
+                    取消
+                  </button>
+                  <button onClick={handleConfirmImport} className="btn-primary">
+                    确认导入错题
+                  </button>
+                </div>
+              </div>
+              <div className="border rounded-xl overflow-hidden">
+                <div className="bg-gray-50 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500">
+                        <th className="px-3 py-2 font-medium">学员</th>
+                        <th className="px-3 py-2 font-medium">题目</th>
+                        <th className="px-3 py-2 font-medium">学生答案</th>
+                        <th className="px-3 py-2 font-medium">正确答案</th>
+                        <th className="px-3 py-2 font-medium">结果</th>
+                        <th className="px-3 py-2 font-medium">错因</th>
+                        <th className="px-3 py-2 font-medium">知识点</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.slice(0, 30).map((row, i) => (
+                        <tr key={i} className={`border-t ${row.isWrong ? 'bg-red-50' : 'bg-emerald-50/30'}`}>
+                          <td className="px-3 py-2">{row.studentName}</td>
+                          <td className="px-3 py-2 max-w-[200px] truncate">{row.questionContent.slice(0, 30)}...</td>
+                          <td className="px-3 py-2">{row.studentAnswer.slice(0, 10)}</td>
+                          <td className="px-3 py-2">{row.correctAnswer.slice(0, 10)}</td>
+                          <td className="px-3 py-2">
+                            {row.isWrong ? (
+                              <span className="text-red-600 font-medium">错误</span>
+                            ) : (
+                              <span className="text-emerald-600 font-medium">正确</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">{row.errorReason}</td>
+                          <td className="px-3 py-2">{row.knowledgePointName}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {importPreview.length > 30 && (
+                  <p className="text-xs text-gray-500 text-center py-2 bg-gray-50 border-t">
+                    仅显示前 30 条，共 {importPreview.length} 条记录
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {importResult && (
+            <div className="mt-4 p-4 bg-emerald-50 rounded-xl border border-emerald-200">
+              <h4 className="font-medium text-emerald-700 mb-2 flex items-center gap-2">
+                <CheckCircle className="w-5 h-5" />
+                导入完成
+              </h4>
+              <ul className="text-sm text-emerald-600 space-y-1">
+                <li>• 总记录数：{importResult.total} 条</li>
+                <li>• 新增错题：{importResult.added} 道（可在错题库查看）</li>
+                <li>• 跳过记录：{importResult.skipped} 条（已存在或无匹配学员）</li>
+              </ul>
+            </div>
+          )}
 
           <div className="mt-6 p-4 bg-gray-50 rounded-xl">
             <h4 className="font-medium text-gray-700 mb-2">导入模板说明</h4>
-            <ul className="text-sm text-gray-500 space-y-1">
-              <li>• 必须包含字段：学员姓名、题目ID、学生答案、正确答案、得分</li>
-              <li>• 可选字段：错因分析、知识点标签</li>
-              <li>• 系统将自动匹配现有题目和知识点</li>
-              <li>• 未匹配的题目将创建新记录</li>
+            <p className="text-xs text-gray-500 mb-3">
+              文件首行作为表头，需包含以下字段（中英文均可）：
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-gray-600">
+              <code className="bg-white px-2 py-1 rounded border">学员姓名</code>
+              <code className="bg-white px-2 py-1 rounded border">题目ID</code>
+              <code className="bg-white px-2 py-1 rounded border">题目内容</code>
+              <code className="bg-white px-2 py-1 rounded border">学生答案</code>
+              <code className="bg-white px-2 py-1 rounded border">正确答案</code>
+              <code className="bg-white px-2 py-1 rounded border">得分</code>
+              <code className="bg-white px-2 py-1 rounded border">满分</code>
+              <code className="bg-white px-2 py-1 rounded border">知识点标签</code>
+            </div>
+            <ul className="text-sm text-gray-500 space-y-1 mt-3">
+              <li>• 系统将自动根据得分低于满分60%判断错题</li>
+              <li>• 根据题目内容关键词自动匹配知识点</li>
+              <li>• 错因将根据内容和关键词智能推断</li>
+              <li>• 未匹配的题目会创建新的题目记录</li>
             </ul>
           </div>
         </div>

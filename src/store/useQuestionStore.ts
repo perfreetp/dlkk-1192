@@ -5,6 +5,7 @@ import { mockErrorQuestions, mockReviewRecords } from '@/data/mockErrorQuestions
 import { generateId, getEbbinghausInterval, calculateMasteryRate } from '@/utils/calculation';
 import { addDays } from '@/utils/date';
 import { useKnowledgeStore } from './useKnowledgeStore';
+import { saveToStorage, loadFromStorage } from '@/utils/persist';
 
 interface QuestionFilters {
   subjectId?: string;
@@ -20,7 +21,7 @@ interface QuestionState {
   questions: Question[];
   errorQuestions: ErrorQuestion[];
   reviewRecords: ReviewRecord[];
-  addErrorQuestion: (eq: Omit<ErrorQuestion, 'id'>) => void;
+  addErrorQuestion: (eq: Omit<ErrorQuestion, 'id'>) => ErrorQuestion;
   updateErrorQuestion: (id: string, updates: Partial<ErrorQuestion>) => void;
   deleteErrorQuestion: (id: string) => void;
   filterErrorQuestions: (filters: QuestionFilters, studentId: string) => ErrorQuestion[];
@@ -32,31 +33,91 @@ interface QuestionState {
   recordReview: (eqId: string, result: 'correct' | 'wrong', note?: string) => void;
   batchUpdateTags: (eqIds: string[], updates: { errorReason?: ErrorReason; knowledgePointIds?: string[] }) => void;
   getErrorReasons: () => ErrorReason[];
+  batchImportErrorQuestions: (imports: Array<Omit<ErrorQuestion, 'id'>>) => ErrorQuestion[];
+  addQuestion: (q: Omit<Question, 'id'> & { id?: string }) => Question;
+  batchAddQuestions: (qs: Array<Omit<Question, 'id'> & { id?: string }>) => Question[];
 }
 
 const errorReasons: ErrorReason[] = ['概念不清', '计算错误', '审题失误', '方法不当', '知识遗忘', '其他'];
 
+const persistQuestions = (data: Question[]) => saveToStorage('questions', data);
+const persistErrorQuestions = (data: ErrorQuestion[]) => saveToStorage('errorQuestions', data);
+const persistReviewRecords = (data: ReviewRecord[]) => saveToStorage('reviewRecords', data);
+
 export const useQuestionStore = create<QuestionState>((set, get) => ({
-  questions: mockQuestions,
-  errorQuestions: mockErrorQuestions,
-  reviewRecords: mockReviewRecords,
+  questions: loadFromStorage('questions', mockQuestions),
+  errorQuestions: loadFromStorage('errorQuestions', mockErrorQuestions),
+  reviewRecords: loadFromStorage('reviewRecords', mockReviewRecords),
+
   getErrorReasons: () => errorReasons,
+
+  addQuestion: (q) => {
+    const newQ: Question = { ...q, id: q.id || generateId() } as Question;
+    set(state => {
+      const exists = state.questions.some(item => item.id === newQ.id);
+      if (exists) return state;
+      const updated = [...state.questions, newQ];
+      persistQuestions(updated);
+      return { questions: updated };
+    });
+    return newQ;
+  },
+
+  batchAddQuestions: (qs) => {
+    const newQs: Question[] = [];
+    set(state => {
+      let updated = [...state.questions];
+      qs.forEach(q => {
+        const newQ: Question = { ...q, id: q.id || generateId() } as Question;
+        if (!updated.some(item => item.id === newQ.id)) {
+          updated.push(newQ);
+          newQs.push(newQ);
+        }
+      });
+      persistQuestions(updated);
+      return { questions: updated };
+    });
+    return newQs;
+  },
+
   addErrorQuestion: (eq) => {
     const newEq: ErrorQuestion = { ...eq, id: generateId() };
-    set(state => ({ errorQuestions: [...state.errorQuestions, newEq] }));
+    set(state => {
+      const updated = [...state.errorQuestions, newEq];
+      persistErrorQuestions(updated);
+      return { errorQuestions: updated };
+    });
+    return newEq;
   },
+
+  batchImportErrorQuestions: (imports) => {
+    const newEqs = imports.map(eq => ({ ...eq, id: generateId() }));
+    set(state => {
+      const updated = [...state.errorQuestions, ...newEqs];
+      persistErrorQuestions(updated);
+      return { errorQuestions: updated };
+    });
+    return newEqs;
+  },
+
   updateErrorQuestion: (id, updates) => {
-    set(state => ({
-      errorQuestions: state.errorQuestions.map(eq =>
+    set(state => {
+      const updated = state.errorQuestions.map(eq =>
         eq.id === id ? { ...eq, ...updates } : eq
-      ),
-    }));
+      );
+      persistErrorQuestions(updated);
+      return { errorQuestions: updated };
+    });
   },
+
   deleteErrorQuestion: (id) => {
-    set(state => ({
-      errorQuestions: state.errorQuestions.filter(eq => eq.id !== id),
-    }));
+    set(state => {
+      const updated = state.errorQuestions.filter(eq => eq.id !== id);
+      persistErrorQuestions(updated);
+      return { errorQuestions: updated };
+    });
   },
+
   filterErrorQuestions: (filters, studentId) => {
     let result = get().errorQuestions.filter(eq => eq.studentId === studentId);
     if (filters.subjectId) {
@@ -99,6 +160,7 @@ export const useQuestionStore = create<QuestionState>((set, get) => ({
     }
     return result.sort((a, b) => new Date(b.errorDate).getTime() - new Date(a.errorDate).getTime());
   },
+
   getMasteryRate: (kpId, studentId) => {
     const kpQuestions = get().questions.filter(q => {
       const kpIds = q.knowledgePointIds || [q.knowledgePointId];
@@ -115,8 +177,10 @@ export const useQuestionStore = create<QuestionState>((set, get) => ({
       : 0;
     return calculateMasteryRate(kpQuestions.length, kpErrors.length, correctionCorrectRate);
   },
+
   getQuestionById: (id) => get().questions.find(q => q.id === id),
   getErrorQuestionById: (id) => get().errorQuestions.find(eq => eq.id === id),
+
   markCorrected: (eqId, note) => {
     const eq = get().getErrorQuestionById(eqId);
     if (!eq) return;
@@ -131,12 +195,14 @@ export const useQuestionStore = create<QuestionState>((set, get) => ({
       masteryRate: Math.min(100, eq.masteryRate + 20),
     });
   },
+
   markMastered: (eqId) => {
     get().updateErrorQuestion(eqId, {
       correctionStatus: 'mastered',
       masteryRate: 100,
     });
   },
+
   recordReview: (eqId, result, note) => {
     const eq = get().getErrorQuestionById(eqId);
     if (!eq) return;
@@ -148,7 +214,11 @@ export const useQuestionStore = create<QuestionState>((set, get) => ({
       result,
       note,
     };
-    set(state => ({ reviewRecords: [...state.reviewRecords, reviewRecord] }));
+    set(state => {
+      const updated = [...state.reviewRecords, reviewRecord];
+      persistReviewRecords(updated);
+      return { reviewRecords: updated };
+    });
     const newReviewCount = eq.reviewCount + 1;
     const diff = typeof q?.difficulty === 'number' ? q.difficulty : 3;
     const interval = getEbbinghausInterval(newReviewCount, diff);
@@ -159,14 +229,17 @@ export const useQuestionStore = create<QuestionState>((set, get) => ({
       masteryRate: Math.max(10, Math.min(100, eq.masteryRate + masteryDelta)),
     });
   },
+
   batchUpdateTags: (eqIds, updates) => {
-    set(state => ({
-      errorQuestions: state.errorQuestions.map(eq => {
+    set(state => {
+      const updated = state.errorQuestions.map(eq => {
         if (!eqIds.includes(eq.id)) return eq;
-        const updated: Partial<ErrorQuestion> = {};
-        if (updates.errorReason) updated.errorReason = updates.errorReason;
-        return { ...eq, ...updated };
-      }),
-    }));
+        const patch: Partial<ErrorQuestion> = {};
+        if (updates.errorReason) patch.errorReason = updates.errorReason;
+        return { ...eq, ...patch };
+      });
+      persistErrorQuestions(updated);
+      return { errorQuestions: updated };
+    });
   },
 }));

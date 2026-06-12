@@ -1,9 +1,11 @@
 import { create } from 'zustand';
-import type { CommentTask, ProgressDataPoint, ClassMasteryData, ErrorDistributionItem, KnowledgePoint } from '@/types';
+import type { CommentTask, ProgressDataPoint, ClassMasteryData, ErrorReason } from '@/types';
 import { mockCommentTasks } from '@/data/mockErrorQuestions';
 import { getRecentDays, formatShortDate } from '@/utils/date';
 import { useQuestionStore } from './useQuestionStore';
 import { useKnowledgeStore } from './useKnowledgeStore';
+import { saveToStorage, loadFromStorage } from '@/utils/persist';
+import { generateId } from '@/utils/calculation';
 
 interface ReportState {
   commentTasks: CommentTask[];
@@ -21,12 +23,15 @@ interface ReportState {
   getErrorDistribution: (classId: string, type: 'reason' | 'knowledge' | 'difficulty') => Record<string, number>;
   getErrorReasonDistribution: (classId: string) => Record<string, number>;
   getCommentTasks: (teacherId: string) => CommentTask[];
-  pushCommentTask: (teacherId: string, studentId: string, knowledgePointId: string) => void;
+  pushCommentTask: (teacherId: string, studentId: string, knowledgePointId: string, options?: Partial<CommentTask>) => CommentTask;
+  batchPushCommentTasks: (teacherId: string, tasks: Array<{ studentId: string; knowledgePointId: string }>) => CommentTask[];
   completeCommentTask: (taskId: string, comment?: string) => void;
 }
 
+const persistCommentTasks = (data: CommentTask[]) => saveToStorage('commentTasks', data);
+
 export const useReportStore = create<ReportState>((set, get) => ({
-  commentTasks: mockCommentTasks as CommentTask[],
+  commentTasks: loadFromStorage('commentTasks', mockCommentTasks as CommentTask[]),
 
   getClassMastery: (classId) => {
     const { students, knowledgePoints, selectedSubjectId } = useKnowledgeStore.getState();
@@ -162,38 +167,98 @@ export const useReportStore = create<ReportState>((set, get) => ({
   },
 
   getCommentTasks: (teacherId) => {
-    return get().commentTasks.filter(ct => ct.teacherId === teacherId);
+    return get().commentTasks
+      .filter(ct => ct.teacherId === teacherId)
+      .sort((a, b) => {
+        const aDate = a.createdAt || a.createDate || '';
+        const bDate = b.createdAt || b.createDate || '';
+        return new Date(bDate).getTime() - new Date(aDate).getTime();
+      });
   },
 
-  pushCommentTask: (teacherId, studentId, knowledgePointId) => {
+  pushCommentTask: (teacherId, studentId, knowledgePointId, options = {}) => {
+    const existing = get().commentTasks.find(
+      ct => ct.teacherId === teacherId
+        && ct.studentId === studentId
+        && ct.knowledgePointId === knowledgePointId
+        && ct.status === 'pending'
+    );
+    if (existing) return existing;
+
     const newTask: CommentTask = {
-      id: `task-${Date.now()}`,
+      id: generateId(),
       teacherId,
       studentId,
       knowledgePointId,
       type: 'concept',
-      title: '知识点讲评',
-      description: '请关注该知识点的掌握情况，及时进行针对性讲评',
+      title: options.title || '知识点讲评',
+      description: options.description || '请关注该知识点的掌握情况，及时进行针对性讲评',
       status: 'pending',
-      priority: 'medium',
+      priority: options.priority || 'medium',
       createdAt: new Date().toISOString(),
-      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      dueDate: options.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      ...options,
     };
-    set(state => ({ commentTasks: [...state.commentTasks, newTask] }));
+    set(state => {
+      const updated = [...state.commentTasks, newTask];
+      persistCommentTasks(updated);
+      return { commentTasks: updated };
+    });
+    return newTask;
+  },
+
+  batchPushCommentTasks: (teacherId, tasks) => {
+    const results: CommentTask[] = [];
+    set(state => {
+      let updated = [...state.commentTasks];
+      tasks.forEach(({ studentId, knowledgePointId }) => {
+        const existing = updated.find(
+          ct => ct.teacherId === teacherId
+            && ct.studentId === studentId
+            && ct.knowledgePointId === knowledgePointId
+            && ct.status === 'pending'
+        );
+        if (existing) {
+          results.push(existing);
+          return;
+        }
+        const newTask: CommentTask = {
+          id: generateId(),
+          teacherId,
+          studentId,
+          knowledgePointId,
+          type: 'concept',
+          title: '知识点讲评',
+          description: '请关注该知识点的掌握情况，及时进行针对性讲评',
+          status: 'pending',
+          priority: 'medium',
+          createdAt: new Date().toISOString(),
+          dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        };
+        updated.push(newTask);
+        results.push(newTask);
+      });
+      persistCommentTasks(updated);
+      return { commentTasks: updated };
+    });
+    return results;
   },
 
   completeCommentTask: (taskId, comment = '') => {
-    set(state => ({
-      commentTasks: state.commentTasks.map(ct =>
+    set(state => {
+      const updated = state.commentTasks.map(ct =>
         ct.id === taskId
           ? {
               ...ct,
               status: 'completed' as const,
               completedAt: new Date().toISOString(),
+              completeDate: new Date().toISOString().split('T')[0],
               comment,
             }
           : ct
-      ),
-    }));
+      );
+      persistCommentTasks(updated);
+      return { commentTasks: updated };
+    });
   },
 }));

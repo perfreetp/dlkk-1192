@@ -1,19 +1,21 @@
 import { create } from 'zustand';
 import type { PracticeConfig, PracticePaper, Question } from '@/types';
 import { useQuestionStore } from './useQuestionStore';
+import { generateId } from '@/utils/calculation';
 
 interface PracticeState {
   config: PracticeConfig;
   setConfig: (config: PracticeConfig) => void;
   generatedPaper: PracticePaper | null;
   currentIndex: number;
-  answers: (number | undefined)[];
+  answers: (number | string | undefined)[];
   isStarted: boolean;
   isFinished: boolean;
   score: number;
+  resultQuestions: { isCorrect: boolean }[];
   generatePaper: () => void;
   startPractice: () => void;
-  submitAnswer: (questionIndex: number, answer: number) => void;
+  submitAnswer: (questionIndex: number, answer: number | string) => void;
   nextQuestion: () => void;
   prevQuestion: () => void;
   finishPractice: () => void;
@@ -30,22 +32,106 @@ const defaultConfig: PracticeConfig = {
   studentId: 'stu-1',
 };
 
-const difficultyWeight = {
+const difficultyWeight: Record<string, number> = {
   easy: 0.2,
   medium: 0.5,
   hard: 0.3,
 };
 
-const difficultyScore = {
+const difficultyScore: Record<string, number> = {
   easy: 1,
   medium: 2,
   hard: 3,
 };
 
+const normalizeText = (text: string): string => {
+  return text
+    .replace(/\s+/g, '')
+    .replace(/[，,。.；;：:（）()【】\[\]""''、]/g, '')
+    .toLowerCase()
+    .trim();
+};
+
+const isAnswerCorrect = (question: Question, userAnswer: number | string | undefined): boolean => {
+  if (userAnswer === undefined || userAnswer === '') return false;
+
+  const { type, correctAnswer, answer } = question;
+
+  if (type === 'single' || type === 'choice') {
+    return Number(userAnswer) === Number(correctAnswer);
+  }
+
+  if (type === 'fill') {
+    if (typeof userAnswer !== 'string') return false;
+    const normalized = normalizeText(userAnswer);
+    const correctFromAnswer = normalizeText(answer);
+    const correctFromField = typeof correctAnswer === 'string' ? normalizeText(correctAnswer) : '';
+    return normalized === correctFromAnswer || normalized === correctFromField;
+  }
+
+  if (type === 'answer' || type === 'essay') {
+    if (typeof userAnswer !== 'string') return false;
+    const normalized = normalizeText(userAnswer);
+    const keywordsFromAnswer = normalizeText(answer);
+    const keywordsFromField = typeof correctAnswer === 'string' ? normalizeText(correctAnswer) : '';
+    const analysis = question.analysis || '';
+    const keywordsFromAnalysis = normalizeText(analysis).slice(0, 40);
+
+    let matchCount = 0;
+    const targetChunks: string[] = [];
+    for (let i = 0; i + 4 <= keywordsFromAnswer.length; i += 2) {
+      targetChunks.push(keywordsFromAnswer.slice(i, i + 4));
+    }
+    for (let i = 0; i + 4 <= keywordsFromField.length; i += 2) {
+      targetChunks.push(keywordsFromField.slice(i, i + 4));
+    }
+    for (let i = 0; i + 4 <= keywordsFromAnalysis.length; i += 2) {
+      targetChunks.push(keywordsFromAnalysis.slice(i, i + 4));
+    }
+
+    targetChunks.forEach(chunk => {
+      if (normalized.includes(chunk)) matchCount++;
+    });
+
+    const required = Math.max(2, Math.floor(targetChunks.length * 0.3));
+    return matchCount >= required;
+  }
+
+  return false;
+};
+
 const calculateWeightedScore = (q: Question, includeErrors: boolean, studentErrorIds: Set<string>): number => {
-  const baseWeight = difficultyWeight[q.difficulty] || 0.5;
+  const diffKey = typeof q.difficulty === 'string' ? q.difficulty : q.difficulty <= 1 ? 'easy' : q.difficulty <= 3 ? 'medium' : 'hard';
+  const baseWeight = difficultyWeight[diffKey] || 0.5;
   const errorWeight = includeErrors && studentErrorIds.has(q.id) ? 2 : 1;
-  return baseWeight * errorWeight * difficultyScore[q.difficulty];
+  return baseWeight * errorWeight * (difficultyScore[diffKey] || 2);
+};
+
+const errorReasonMap: Record<string, string[]> = {
+  '概念不清': ['不理解', '概念错误', '定义混淆', '不知道'],
+  '计算错误': ['算错', '计算失误', '加错', '乘错', '减错', '除错'],
+  '审题失误': ['没看清', '理解错', '看错', '题目理解'],
+  '方法不当': ['方法错误', '思路错', '解法不对', '不会做'],
+  '知识遗忘': ['忘了', '不记得', '遗忘'],
+};
+
+const inferErrorReason = (question: Question, userAnswer: number | string | undefined): string => {
+  if (!userAnswer || userAnswer === '') return '知识遗忘';
+  if (typeof userAnswer !== 'string') return '概念不清';
+  const normalized = normalizeText(userAnswer);
+  for (const [reason, keywords] of Object.entries(errorReasonMap)) {
+    if (keywords.some(k => normalized.includes(k))) return reason;
+  }
+  const ans = question.answer || '';
+  const len = Math.min(ans.length, 6);
+  let correctCount = 0;
+  for (let i = 0; i < len; i++) {
+    if (normalized.includes(normalizeText(ans[i]))) correctCount++;
+  }
+  if (correctCount >= Math.ceil(len * 0.7)) return '计算错误';
+  if (correctCount >= Math.ceil(len * 0.4)) return '方法不当';
+  if (correctCount >= 1) return '审题失误';
+  return '概念不清';
 };
 
 export const usePracticeStore = create<PracticeState>((set, get) => ({
@@ -57,6 +143,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   isStarted: false,
   isFinished: false,
   score: 0,
+  resultQuestions: [],
 
   generatePaper: () => {
     const { config } = get();
@@ -68,16 +155,26 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
         .map(eq => eq.questionId)
     );
 
-    let pool = questions.filter(q =>
-      q.subjectId === config.subjectId &&
-      config.knowledgePointIds.includes(q.knowledgePointId) &&
-      config.questionTypes.includes(q.type)
-    );
+    const typeFilter: string[] = [];
+    config.questionTypes.forEach(t => {
+      typeFilter.push(t);
+      if (t === 'choice') typeFilter.push('single');
+      if (t === 'answer') typeFilter.push('essay');
+    });
+
+    let pool = questions.filter(q => {
+      const matchesSubject = q.subjectId === config.subjectId;
+      const kpIds = q.knowledgePointIds || [q.knowledgePointId];
+      const matchesKp = config.knowledgePointIds.length === 0
+        || config.knowledgePointIds.includes(q.knowledgePointId)
+        || kpIds.some(id => config.knowledgePointIds.includes(id));
+      const matchesType = typeFilter.includes(q.type);
+      return matchesSubject && matchesKp && matchesType;
+    });
 
     if (pool.length === 0) {
       pool = questions.filter(q =>
-        q.subjectId === config.subjectId &&
-        config.questionTypes.includes(q.type)
+        q.subjectId === config.subjectId && typeFilter.includes(q.type)
       );
     }
 
@@ -104,6 +201,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       generatedPaper: paper,
       currentIndex: 0,
       answers: new Array(selectedQuestions.length).fill(undefined),
+      resultQuestions: [],
       isStarted: false,
       isFinished: false,
       score: 0,
@@ -141,41 +239,66 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   },
 
   finishPractice: () => {
-    const { answers, generatedPaper } = get();
+    const { answers, generatedPaper, config } = get();
     if (!generatedPaper) return;
 
     let correctCount = 0;
-    const { addErrorQuestion, getMasteryRate } = useQuestionStore.getState();
+    const results = generatedPaper.questions.map((q, idx) => {
+      const isCorrect = isAnswerCorrect(q, answers[idx]);
+      if (isCorrect) correctCount++;
+      return { isCorrect };
+    });
+
+    const { addErrorQuestion, getMasteryRate, getErrorQuestionById } = useQuestionStore.getState();
 
     generatedPaper.questions.forEach((q, idx) => {
-      const answer = answers[idx];
-      if (answer === q.correctAnswer) {
-        correctCount++;
+      if (results[idx].isCorrect) return;
+      const existing = useQuestionStore.getState().errorQuestions.find(
+        eq => eq.studentId === config.studentId && eq.questionId === q.id
+      );
+      if (existing) {
+        addErrorQuestion({
+          studentId: config.studentId,
+          questionId: q.id,
+          knowledgePointId: q.knowledgePointId,
+          wrongAnswer: typeof answers[idx] === 'number'
+            ? (q.options ? q.options[answers[idx] as number] : String(answers[idx]))
+            : String(answers[idx] || ''),
+          errorReason: (q.errorReason || inferErrorReason(q, answers[idx])) as any,
+          errorDate: new Date().toISOString().split('T')[0],
+          correctionStatus: 'pending',
+          nextReviewDate: new Date().toISOString().split('T')[0],
+          reviewCount: existing.reviewCount,
+          masteryRate: getMasteryRate(q.knowledgePointId, config.studentId),
+          sourceExam: '专项练习',
+        });
       } else {
-        const existing = useQuestionStore.getState().errorQuestions.find(
-          eq => eq.studentId === get().config.studentId && eq.questionId === q.id
-        );
-        if (!existing) {
-          addErrorQuestion({
-            studentId: get().config.studentId,
-            questionId: q.id,
-            knowledgePointId: q.knowledgePointId,
-            errorReason: q.errorReason || '概念不清',
-            errorDate: new Date().toISOString().split('T')[0],
-            correctionStatus: 'pending',
-            nextReviewDate: new Date().toISOString().split('T')[0],
-            reviewCount: 0,
-            masteryRate: getMasteryRate(q.knowledgePointId, get().config.studentId),
-          });
-        }
+        addErrorQuestion({
+          studentId: config.studentId,
+          questionId: q.id,
+          knowledgePointId: q.knowledgePointId,
+          wrongAnswer: typeof answers[idx] === 'number'
+            ? (q.options ? q.options[answers[idx] as number] : String(answers[idx]))
+            : String(answers[idx] || ''),
+          errorReason: (q.errorReason || inferErrorReason(q, answers[idx])) as any,
+          errorDate: new Date().toISOString().split('T')[0],
+          correctionStatus: 'pending',
+          nextReviewDate: new Date().toISOString().split('T')[0],
+          reviewCount: 0,
+          masteryRate: getMasteryRate(q.knowledgePointId, config.studentId),
+          sourceExam: '专项练习',
+        });
       }
     });
 
-    const score = Math.round((correctCount / generatedPaper.questions.length) * 100);
+    const score = generatedPaper.questions.length > 0
+      ? Math.round((correctCount / generatedPaper.questions.length) * 100)
+      : 0;
 
     set({
       isFinished: true,
       score,
+      resultQuestions: results,
     });
   },
 
@@ -187,6 +310,7 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
       isStarted: false,
       isFinished: false,
       score: 0,
+      resultQuestions: [],
       config: defaultConfig,
     });
   },
