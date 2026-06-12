@@ -12,18 +12,25 @@ import {
   RefreshCw,
   Award,
   AlertCircle,
+  BookOpen,
+  BookmarkPlus,
+  RotateCw,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { DifficultyBadge, QuestionTypeBadge, ErrorReasonBadge } from '@/components/ui/Badge';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useKnowledgeStore } from '@/store/useKnowledgeStore';
 import { usePracticeStore } from '@/store/usePracticeStore';
-import type { Difficulty, QuestionType } from '@/types';
+import { useQuestionStore } from '@/store/useQuestionStore';
+import type { Difficulty, QuestionType, ErrorReason } from '@/types';
 
 const Practice = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { currentUser } = useAuthStore();
   const { subjects, knowledgePoints, selectedSubjectId, setSelectedSubjectId } = useKnowledgeStore();
+  const { addErrorQuestion, getMasteryRate } = useQuestionStore();
   const {
     config,
     setConfig,
@@ -50,6 +57,8 @@ const Practice = () => {
     initialKpId ? [initialKpId] : []
   );
   const [textInputs, setTextInputs] = useState<Record<number, string>>({});
+  const [reportViewQuestion, setReportViewQuestion] = useState<number | null>(null);
+  const [addedToReview, setAddedToReview] = useState<Set<number>>(new Set());
 
   const subjectKnowledgePoints = useMemo(() =>
     knowledgePoints.filter(kp => kp.subjectId === selectedSubjectId),
@@ -623,14 +632,13 @@ const Practice = () => {
         </div>
       )}
 
-      {isFinished && (
-        <div className="max-w-2xl mx-auto space-y-6">
+      {isFinished && generatedPaper && (
+        <div className="max-w-4xl mx-auto space-y-6">
           <div className="card text-center">
             <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-br from-accent-400 to-accent-500 text-white flex items-center justify-center">
               <Award className="w-12 h-12" />
             </div>
             <h2 className="text-2xl font-bold text-gray-800 mb-2">练习完成！</h2>
-            <p className="text-gray-500 mb-6">你做得很棒，继续加油！</p>
 
             <div className="text-6xl font-bold text-primary-900 mb-2">
               {score}
@@ -658,6 +666,235 @@ const Practice = () => {
               </div>
             </div>
 
+            {resultQuestions.some(r => !r.isCorrect) && (
+              <div className="mt-6 p-4 bg-amber-50 rounded-xl border border-amber-200">
+                <p className="text-sm text-amber-700">
+                  <AlertCircle className="w-4 h-4 inline mr-1.5 -mt-0.5" />
+                  本次练习有 <strong>{resultQuestions.filter(r => !r.isCorrect).length}</strong> 道错题，
+                  可在下方报告中逐一查看解析并加入复习计划
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-primary-500" />
+                练习报告
+              </h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    const wrongKpIds = [...new Set(
+                      generatedPaper.questions
+                        .filter((_, i) => !resultQuestions[i].isCorrect)
+                        .map(q => q.knowledgePointId)
+                    )];
+                    if (wrongKpIds.length > 0) {
+                      setSelectedKnowledgeIds(wrongKpIds);
+                      setConfig({ ...config, knowledgePointIds: wrongKpIds, subjectId: selectedSubjectId, studentId });
+                      resetPractice();
+                      setTimeout(() => generatePaper(), 100);
+                    } else {
+                      handleRetry();
+                    }
+                  }}
+                  className="btn-secondary flex items-center gap-2"
+                >
+                  <RotateCw className="w-4 h-4" />
+                  按错题知识点重新组卷
+                </button>
+                <button onClick={handleRetry} className="btn-secondary flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4" />
+                  再练一组
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {generatedPaper.questions.map((q, idx) => {
+                const isCorrect = resultQuestions[idx]?.isCorrect ?? false;
+                const userAnswer = answers[idx];
+                const kp = knowledgePoints.find(k => k.id === q.knowledgePointId);
+                const isExpanded = reportViewQuestion === idx;
+                const isInReview = addedToReview.has(idx);
+
+                const getUserAnswerDisplay = () => {
+                  if (userAnswer === undefined || userAnswer === '') return '未作答';
+                  if ((q.type === 'choice' || q.type === 'single') && q.options) {
+                    const optIdx = Number(userAnswer);
+                    return q.options[optIdx] ? `第${String.fromCharCode(65 + optIdx)}项：${q.options[optIdx]}` : String(userAnswer);
+                  }
+                  return String(userAnswer);
+                };
+
+                const getCorrectAnswerDisplay = () => {
+                  if ((q.type === 'choice' || q.type === 'single') && q.options) {
+                    const optIdx = Number(q.correctAnswer);
+                    return q.options[optIdx] ? `第${String.fromCharCode(65 + optIdx)}项：${q.options[optIdx]}` : String(q.correctAnswer);
+                  }
+                  return q.answer || String(q.correctAnswer);
+                };
+
+                const getErrorReason = (): ErrorReason | null => {
+                  if (isCorrect) return null;
+                  if (q.errorReason) return q.errorReason;
+                  const ua = String(userAnswer || '');
+                  const keywords: Record<ErrorReason, string[]> = {
+                    '概念不清': ['不理解', '概念', '混淆'],
+                    '计算错误': ['算错', '计算', '运算'],
+                    '审题失误': ['看错', '没看清', '理解错'],
+                    '方法不当': ['方法', '思路', '不会'],
+                    '知识遗忘': ['忘了', '不记得', '遗忘'],
+                    '其他': [],
+                  };
+                  for (const [reason, kws] of Object.entries(keywords)) {
+                    if (kws.some(k => ua.includes(k))) return reason as ErrorReason;
+                  }
+                  return '概念不清';
+                };
+
+                const handleAddToReview = () => {
+                  if (isInReview) return;
+                  const wrongAnswer = typeof userAnswer === 'number'
+                    ? (q.options ? q.options[userAnswer] : String(userAnswer))
+                    : String(userAnswer || '');
+                  addErrorQuestion({
+                    studentId,
+                    questionId: q.id,
+                    knowledgePointId: q.knowledgePointId,
+                    wrongAnswer,
+                    errorReason: getErrorReason() || '概念不清',
+                    errorDate: new Date().toISOString().split('T')[0],
+                    correctionStatus: 'pending',
+                    nextReviewDate: new Date().toISOString().split('T')[0],
+                    reviewCount: 0,
+                    masteryRate: getMasteryRate(q.knowledgePointId, studentId),
+                    sourceExam: '专项练习',
+                  });
+                  setAddedToReview(prev => new Set(prev).add(idx));
+                };
+
+                return (
+                  <div
+                    key={q.id}
+                    className={`rounded-xl border-2 transition-all ${
+                      isCorrect
+                        ? 'border-emerald-200 bg-emerald-50/30'
+                        : 'border-red-200 bg-red-50/30'
+                    }`}
+                  >
+                    <div
+                      className="flex items-start gap-3 p-4 cursor-pointer"
+                      onClick={() => setReportViewQuestion(isExpanded ? null : idx)}
+                    >
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                        isCorrect
+                          ? 'bg-emerald-500 text-white'
+                          : 'bg-red-500 text-white'
+                      }`}>
+                        {isCorrect ? <Check className="w-5 h-5" /> : <X className="w-5 h-5" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-800 mb-1">
+                          第 {idx + 1} 题
+                        </p>
+                        <p className="text-sm text-gray-600 line-clamp-2">
+                          {q.content.slice(0, 100)}{q.content.length > 100 ? '...' : ''}
+                        </p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <QuestionTypeBadge type={q.type} />
+                          <DifficultyBadge difficulty={q.difficulty} />
+                          {!isCorrect && getErrorReason() && (
+                            <ErrorReasonBadge reason={getErrorReason()!} />
+                          )}
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {isExpanded ? <EyeOff className="w-5 h-5 text-gray-400" /> : <Eye className="w-5 h-5 text-gray-400" />}
+                      </div>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="px-4 pb-4 space-y-4 border-t border-gray-100 pt-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className={`p-3 rounded-lg ${isCorrect ? 'bg-emerald-50' : 'bg-red-50'}`}>
+                            <p className="text-xs font-medium text-gray-500 mb-1">你的答案</p>
+                            <p className={`text-sm ${isCorrect ? 'text-emerald-700' : 'text-red-700'}`}>
+                              {getUserAnswerDisplay()}
+                            </p>
+                          </div>
+                          <div className="p-3 rounded-lg bg-blue-50">
+                            <p className="text-xs font-medium text-gray-500 mb-1">正确答案</p>
+                            <p className="text-sm text-blue-700">{getCorrectAnswerDisplay()}</p>
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-lg bg-gray-50">
+                          <p className="text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">
+                            <BookOpen className="w-3.5 h-3.5" />
+                            解析
+                          </p>
+                          <p className="text-sm text-gray-700">{q.analysis || q.answerExplanation || '暂无解析'}</p>
+                        </div>
+
+                        <div className="flex items-center gap-4 flex-wrap">
+                          {kp && (
+                            <span className="text-xs text-gray-500 flex items-center gap-1">
+                              <Target className="w-3.5 h-3.5" />
+                              关联知识点：{kp.name}
+                            </span>
+                          )}
+                          {!isCorrect && getErrorReason() && (
+                            <span className="text-xs text-gray-500 flex items-center gap-1">
+                              <AlertCircle className="w-3.5 h-3.5" />
+                              错因：{getErrorReason()}
+                            </span>
+                          )}
+                        </div>
+
+                        {!isCorrect && (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAddToReview();
+                              }}
+                              disabled={isInReview}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all ${
+                                isInReview
+                                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                  : 'bg-accent-500 text-white hover:bg-accent-600'
+                              }`}
+                            >
+                              <BookmarkPlus className="w-4 h-4" />
+                              {isInReview ? '已加入复习计划' : '加入复习计划'}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (q.knowledgePointId) {
+                                  setSelectedKnowledgeIds([q.knowledgePointId]);
+                                  setConfig({ ...config, knowledgePointIds: [q.knowledgePointId], subjectId: selectedSubjectId, studentId });
+                                  resetPractice();
+                                  setTimeout(() => generatePaper(), 100);
+                                }
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-primary-100 text-primary-700 hover:bg-primary-200 transition-all"
+                            >
+                              <RotateCw className="w-4 h-4" />
+                              同类题再练
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
             <div className="flex gap-3 mt-8">
               <button onClick={handleRetry} className="flex-1 btn-secondary">
                 再练一组
@@ -669,7 +906,7 @@ const Practice = () => {
                 }}
                 className="flex-1 btn-primary"
               >
-                查看错题
+                查看错题库
               </button>
             </div>
           </div>

@@ -54,7 +54,7 @@ const findKnowledgePointId = (text: string, kps: Array<{ id: string; name: strin
 const TeacherWorkbench = () => {
   const { currentUser } = useAuthStore();
   const { classes, students, selectedClassId, setSelectedClassId, knowledgePoints } = useKnowledgeStore();
-  const { errorQuestions, getQuestionById, getMasteryRate, batchUpdateTags, batchImportErrorQuestions, questions, addQuestion, batchAddQuestions } = useQuestionStore();
+  const { errorQuestions, getQuestionById, getMasteryRate, batchUpdateTags, batchImportErrorQuestions, questions, addQuestion, batchAddQuestions, importHistory, addImportHistory, undoLastImport } = useQuestionStore();
   const {
     getClassMastery,
     getStudentMastery,
@@ -82,7 +82,15 @@ const TeacherWorkbench = () => {
     knowledgePointName: string;
   }>>([]);
   const [importResult, setImportResult] = useState<{ total: number; added: number; skipped: number } | null>(null);
+  const [lastImportFileName, setLastImportFileName] = useState('');
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pushModal, setPushModal] = useState<{ studentId: string; knowledgePointId: string } | null>(null);
+  const [pushNote, setPushNote] = useState('');
+  const [pushDueDate, setPushDueDate] = useState('');
+  const [taskFilter, setTaskFilter] = useState<{ student: string; kp: string; status: string }>({ student: '', kp: '', status: '' });
+  const [completeModal, setCompleteModal] = useState<string | null>(null);
+  const [completeNote, setCompleteNote] = useState('');
 
   const classStudents = useMemo(() =>
     students.filter(s => s.classId === selectedClassId),
@@ -100,6 +108,24 @@ const TeacherWorkbench = () => {
   const commentTasks = getCommentTasks(teacherId);
   const pendingTasks = commentTasks.filter(t => t.status === 'pending');
   const completedTasks = commentTasks.filter(t => t.status === 'completed');
+
+  const filteredCommentTasks = useMemo(() => {
+    let tasks = commentTasks;
+    if (taskFilter.student) {
+      const student = students.find(s => s.name.includes(taskFilter.student));
+      if (student) tasks = tasks.filter(t => t.studentId === student.id);
+    }
+    if (taskFilter.kp) {
+      tasks = tasks.filter(t => {
+        const kp = knowledgePoints.find(k => k.id === t.knowledgePointId);
+        return kp?.name.includes(taskFilter.kp);
+      });
+    }
+    if (taskFilter.status) {
+      tasks = tasks.filter(t => t.status === taskFilter.status);
+    }
+    return tasks;
+  }, [commentTasks, taskFilter, students, knowledgePoints]);
 
   const selectedStudent = selectedStudentId
     ? students.find(s => s.id === selectedStudentId)
@@ -126,14 +152,35 @@ const TeacherWorkbench = () => {
       showToast('info', '该学员此知识点已有待处理的讲评任务');
       return;
     }
-    const task = pushCommentTask(teacherId, studentId, knowledgePointId);
-    showToast('success', `已推送给 ${students.find(s => s.id === studentId)?.name}：${task.title}`);
+    setPushModal({ studentId, knowledgePointId });
+    setPushNote('');
+    setPushDueDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+  };
+
+  const handleConfirmPush = () => {
+    if (!pushModal) return;
+    const task = pushCommentTask(teacherId, pushModal.studentId, pushModal.knowledgePointId, {
+      description: pushNote || undefined,
+      dueDate: pushDueDate || undefined,
+    });
+    showToast('success', `已推送给 ${students.find(s => s.id === pushModal.studentId)?.name}：${task.title}`);
+    setPushModal(null);
+    setPushNote('');
+    setPushDueDate('');
   };
 
   const handleCompleteTask = (taskId: string) => {
-    completeCommentTask(taskId);
-    const studentName = students.find(s => s.id === commentTasks.find(t => t.id === taskId)?.studentId)?.name;
+    setCompleteModal(taskId);
+    setCompleteNote('');
+  };
+
+  const handleConfirmComplete = () => {
+    if (!completeModal) return;
+    completeCommentTask(completeModal, completeNote);
+    const studentName = students.find(s => s.id === commentTasks.find(t => t.id === completeModal)?.studentId)?.name;
     showToast('success', `${studentName} 的讲评任务已标记完成`);
+    setCompleteModal(null);
+    setCompleteNote('');
   };
 
   const handleExportParentReport = (student: typeof selectedStudent) => {
@@ -183,6 +230,7 @@ const TeacherWorkbench = () => {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setLastImportFileName(file.name);
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
@@ -306,11 +354,25 @@ const TeacherWorkbench = () => {
       });
     });
 
+    let addedQuestionIds: string[] = [];
     if (newQuestionsToAdd.length > 0) {
-      batchAddQuestions(newQuestionsToAdd);
+      const addedQs = batchAddQuestions(newQuestionsToAdd);
+      addedQuestionIds = addedQs.map(q => q.id);
     }
 
-    batchImportErrorQuestions(toImport);
+    const addedEqs = batchImportErrorQuestions(toImport);
+    const addedEqIds = addedEqs.map(eq => eq.id);
+
+    addImportHistory({
+      id: generateId(),
+      fileName: lastImportFileName,
+      importDate: new Date().toISOString(),
+      totalRecords: importPreview.length,
+      addedCount: toImport.length,
+      skippedCount: importPreview.length - toImport.length,
+      addedErrorQuestionIds: addedEqIds,
+      addedQuestionIds,
+    });
 
     setImportResult({
       total: importPreview.length,
@@ -717,6 +779,40 @@ const TeacherWorkbench = () => {
                       })}
                   </div>
                 </div>
+
+                <div className="card">
+                  <h4 className="font-bold text-gray-800 mb-3">讲评记录</h4>
+                  {commentTasks.filter(t => t.studentId === selectedStudent.id).length > 0 ? (
+                    <div className="space-y-3">
+                      {commentTasks.filter(t => t.studentId === selectedStudent.id).map(task => {
+                        const kp = knowledgePoints.find(k => k.id === task.knowledgePointId);
+                        return (
+                          <div key={task.id} className={`p-3 rounded-lg ${
+                            task.status === 'completed' ? 'bg-emerald-50' : 'bg-amber-50'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-gray-800">{task.title}</span>
+                              <StatusBadge status={task.status === 'pending' ? 'pending' : 'mastered'} />
+                            </div>
+                            <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                              <span>知识点：{kp?.name || '未指定'}</span>
+                              {task.dueDate && <span>截止：{formatDate(task.dueDate)}</span>}
+                              {task.completedAt && <span className="text-emerald-600">完成：{formatDate(task.completedAt)}</span>}
+                            </div>
+                            {task.description && task.description !== '请关注该知识点的掌握情况，及时进行针对性讲评' && (
+                              <p className="text-xs text-gray-500 mt-1">备注：{task.description}</p>
+                            )}
+                            {task.comment && (
+                              <p className="text-xs text-blue-600 mt-1">完成备注：{task.comment}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500 text-center py-4">暂无讲评记录</p>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="card text-center py-16">
@@ -732,7 +828,7 @@ const TeacherWorkbench = () => {
 
       {activeTab === 'tasks' && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex gap-4">
               <span className="flex items-center gap-1.5 text-sm text-gray-600">
                 <Clock className="w-4 h-4" />
@@ -743,27 +839,59 @@ const TeacherWorkbench = () => {
                 已完成 {completedTasks.length} 条
               </span>
             </div>
-            {pendingTasks.length > 0 && (
+            <button
+              onClick={handleBatchPush}
+              className="btn-accent flex items-center gap-2"
+            >
+              <Send className="w-4 h-4" />
+              批量推送薄弱学员任务
+            </button>
+          </div>
+
+          <div className="flex gap-3 flex-wrap">
+            <input
+              type="text"
+              placeholder="按学员姓名筛选..."
+              value={taskFilter.student}
+              onChange={(e) => setTaskFilter({ ...taskFilter, student: e.target.value })}
+              className="input w-44 text-sm"
+            />
+            <input
+              type="text"
+              placeholder="按知识点筛选..."
+              value={taskFilter.kp}
+              onChange={(e) => setTaskFilter({ ...taskFilter, kp: e.target.value })}
+              className="input w-44 text-sm"
+            />
+            <select
+              value={taskFilter.status}
+              onChange={(e) => setTaskFilter({ ...taskFilter, status: e.target.value })}
+              className="select w-32 text-sm"
+            >
+              <option value="">全部状态</option>
+              <option value="pending">待处理</option>
+              <option value="completed">已完成</option>
+            </select>
+            {(taskFilter.student || taskFilter.kp || taskFilter.status) && (
               <button
-                onClick={handleBatchPush}
-                className="btn-accent flex items-center gap-2"
+                onClick={() => setTaskFilter({ student: '', kp: '', status: '' })}
+                className="text-sm text-primary-600 hover:text-primary-700"
               >
-                <Send className="w-4 h-4" />
-                批量推送薄弱学员任务
+                清除筛选
               </button>
             )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {commentTasks.map(task => {
+            {filteredCommentTasks.map(task => {
               const student = students.find(s => s.id === task.studentId);
-              const kp = useKnowledgeStore.getState().knowledgePoints.find(k => k.id === task.knowledgePointId);
+              const kp = knowledgePoints.find(k => k.id === task.knowledgePointId);
 
               return (
                 <div
                   key={task.id}
                   className={`card transition-all ${
-                    task.status === 'completed' ? 'opacity-60' : ''
+                    task.status === 'completed' ? 'opacity-70' : ''
                   }`}
                 >
                   <div className="flex items-start gap-3 mb-3">
@@ -809,6 +937,15 @@ const TeacherWorkbench = () => {
                     )}
                   </div>
 
+                  {task.comment && (
+                    <div className="mb-3 p-2 bg-blue-50 rounded-lg">
+                      <p className="text-xs text-blue-700">
+                        <MessageSquare className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
+                        {task.status === 'completed' ? '完成备注' : '讲评备注'}：{task.comment}
+                      </p>
+                    </div>
+                  )}
+
                   {task.status === 'pending' && (
                     <div className="flex gap-2">
                       <button
@@ -833,12 +970,16 @@ const TeacherWorkbench = () => {
               );
             })}
 
-            {commentTasks.length === 0 && (
+            {filteredCommentTasks.length === 0 && (
               <div className="col-span-2 card text-center py-16">
                 <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gray-100 flex items-center justify-center">
                   <Bell className="w-10 h-10 text-gray-300" />
                 </div>
-                <p className="text-gray-500">暂无讲评任务，可在学员列表推送任务</p>
+                <p className="text-gray-500">
+                  {taskFilter.student || taskFilter.kp || taskFilter.status
+                    ? '没有匹配筛选条件的任务'
+                    : '暂无讲评任务，可在学员列表推送任务'}
+                </p>
               </div>
             )}
           </div>
@@ -948,15 +1089,117 @@ const TeacherWorkbench = () => {
 
           {importResult && (
             <div className="mt-4 p-4 bg-emerald-50 rounded-xl border border-emerald-200">
-              <h4 className="font-medium text-emerald-700 mb-2 flex items-center gap-2">
-                <CheckCircle className="w-5 h-5" />
-                导入完成
-              </h4>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-medium text-emerald-700 flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5" />
+                  导入完成
+                </h4>
+                <button
+                  onClick={() => {
+                    const undone = undoLastImport();
+                    if (undone) {
+                      setImportResult(null);
+                      setImportPreview([]);
+                      showToast('info', `已撤回导入「${undone.fileName}」，删除 ${undone.addedCount} 道错题`);
+                    }
+                  }}
+                  className="text-xs text-red-600 hover:text-red-700 flex items-center gap-1 px-2 py-1 rounded bg-red-50 hover:bg-red-100 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  撤回本次导入
+                </button>
+              </div>
               <ul className="text-sm text-emerald-600 space-y-1">
                 <li>• 总记录数：{importResult.total} 条</li>
                 <li>• 新增错题：{importResult.added} 道（可在错题库查看）</li>
                 <li>• 跳过记录：{importResult.skipped} 条（已存在或无匹配学员）</li>
               </ul>
+            </div>
+          )}
+
+          {importHistory.length > 0 && (
+            <div className="mt-6">
+              <h4 className="font-medium text-gray-700 mb-3 flex items-center gap-2">
+                <Clock className="w-4 h-4" />
+                导入历史 ({importHistory.length} 次)
+              </h4>
+              <div className="space-y-2">
+                {importHistory.slice(0, 10).map(record => (
+                  <div
+                    key={record.id}
+                    className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                      expandedHistoryId === record.id
+                        ? 'border-primary-300 bg-primary-50/30'
+                        : 'border-gray-100 bg-gray-50 hover:bg-gray-100'
+                    }`}
+                    onClick={() => setExpandedHistoryId(expandedHistoryId === record.id ? null : record.id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <FileText className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm font-medium text-gray-700">{record.fileName}</span>
+                        <span className="text-xs text-gray-400">
+                          {formatDate(record.importDate)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-emerald-600">+{record.addedCount} 新增</span>
+                        <span className="text-gray-400">{record.skippedCount} 跳过</span>
+                      </div>
+                    </div>
+                    {expandedHistoryId === record.id && (
+                      <div className="mt-3 pt-3 border-t border-gray-200">
+                        <div className="grid grid-cols-3 gap-3 text-sm">
+                          <div className="text-center p-2 bg-white rounded-lg">
+                            <p className="text-lg font-bold text-gray-700">{record.totalRecords}</p>
+                            <p className="text-xs text-gray-500">总记录</p>
+                          </div>
+                          <div className="text-center p-2 bg-emerald-50 rounded-lg">
+                            <p className="text-lg font-bold text-emerald-600">{record.addedCount}</p>
+                            <p className="text-xs text-emerald-500">新增错题</p>
+                          </div>
+                          <div className="text-center p-2 bg-gray-50 rounded-lg">
+                            <p className="text-lg font-bold text-gray-500">{record.skippedCount}</p>
+                            <p className="text-xs text-gray-400">跳过</p>
+                          </div>
+                        </div>
+                        {record.addedErrorQuestionIds.length > 0 && (
+                          <div className="mt-2">
+                            <p className="text-xs text-gray-500 mb-1">新增错题 ID：</p>
+                            <div className="flex flex-wrap gap-1">
+                              {record.addedErrorQuestionIds.slice(0, 10).map(id => (
+                                <span key={id} className="text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">
+                                  {id.slice(0, 8)}
+                                </span>
+                              ))}
+                              {record.addedErrorQuestionIds.length > 10 && (
+                                <span className="text-xs text-gray-400">...等 {record.addedErrorQuestionIds.length} 条</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {importHistory[0]?.id === record.id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const undone = undoLastImport();
+                              if (undone) {
+                                setImportResult(null);
+                                setImportPreview([]);
+                                showToast('info', `已撤回导入「${undone.fileName}」`);
+                              }
+                            }}
+                            className="mt-3 text-xs text-red-600 hover:text-red-700 flex items-center gap-1 px-2 py-1 rounded bg-red-50 hover:bg-red-100 transition-colors"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            撤回此导入
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -981,6 +1224,89 @@ const TeacherWorkbench = () => {
               <li>• 错因将根据内容和关键词智能推断</li>
               <li>• 未匹配的题目会创建新的题目记录</li>
             </ul>
+          </div>
+        </div>
+      )}
+
+      {pushModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 animate-slide-up">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">推送讲评任务</h2>
+            <div className="space-y-4">
+              <div className="p-3 bg-gray-50 rounded-lg">
+                <p className="text-sm text-gray-700">
+                  学员：<strong>{students.find(s => s.id === pushModal.studentId)?.name}</strong>
+                </p>
+                <p className="text-sm text-gray-700">
+                  知识点：<strong>{knowledgePoints.find(k => k.id === pushModal.knowledgePointId)?.name}</strong>
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  讲评备注
+                </label>
+                <textarea
+                  value={pushNote}
+                  onChange={(e) => setPushNote(e.target.value)}
+                  className="input"
+                  rows={3}
+                  placeholder="输入讲评备注（可选）"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  截止日期
+                </label>
+                <input
+                  type="date"
+                  value={pushDueDate}
+                  onChange={(e) => setPushDueDate(e.target.value)}
+                  className="input"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => { setPushModal(null); setPushNote(''); setPushDueDate(''); }}
+                className="flex-1 btn-secondary"
+              >
+                取消
+              </button>
+              <button onClick={handleConfirmPush} className="flex-1 btn-primary">
+                确认推送
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {completeModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 animate-slide-up">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">标记讲评完成</h2>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                完成备注
+              </label>
+              <textarea
+                value={completeNote}
+                onChange={(e) => setCompleteNote(e.target.value)}
+                className="input"
+                rows={3}
+                placeholder="输入完成备注（可选）"
+              />
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => { setCompleteModal(null); setCompleteNote(''); }}
+                className="flex-1 btn-secondary"
+              >
+                取消
+              </button>
+              <button onClick={handleConfirmComplete} className="flex-1 btn-primary">
+                确认完成
+              </button>
+            </div>
           </div>
         </div>
       )}

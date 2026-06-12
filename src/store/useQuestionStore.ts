@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Question, ErrorQuestion, ReviewRecord, ErrorReason } from '@/types';
+import type { Question, ErrorQuestion, ReviewRecord, ErrorReason, ImportHistoryRecord } from '@/types';
 import { mockQuestions } from '@/data/mockQuestions';
 import { mockErrorQuestions, mockReviewRecords } from '@/data/mockErrorQuestions';
 import { generateId, getEbbinghausInterval, calculateMasteryRate } from '@/utils/calculation';
@@ -21,6 +21,7 @@ interface QuestionState {
   questions: Question[];
   errorQuestions: ErrorQuestion[];
   reviewRecords: ReviewRecord[];
+  importHistory: ImportHistoryRecord[];
   addErrorQuestion: (eq: Omit<ErrorQuestion, 'id'>) => ErrorQuestion;
   updateErrorQuestion: (id: string, updates: Partial<ErrorQuestion>) => void;
   deleteErrorQuestion: (id: string) => void;
@@ -36,6 +37,8 @@ interface QuestionState {
   batchImportErrorQuestions: (imports: Array<Omit<ErrorQuestion, 'id'>>) => ErrorQuestion[];
   addQuestion: (q: Omit<Question, 'id'> & { id?: string }) => Question;
   batchAddQuestions: (qs: Array<Omit<Question, 'id'> & { id?: string }>) => Question[];
+  addImportHistory: (record: ImportHistoryRecord) => void;
+  undoLastImport: () => ImportHistoryRecord | null;
 }
 
 const errorReasons: ErrorReason[] = ['概念不清', '计算错误', '审题失误', '方法不当', '知识遗忘', '其他'];
@@ -43,11 +46,13 @@ const errorReasons: ErrorReason[] = ['概念不清', '计算错误', '审题失�
 const persistQuestions = (data: Question[]) => saveToStorage('questions', data);
 const persistErrorQuestions = (data: ErrorQuestion[]) => saveToStorage('errorQuestions', data);
 const persistReviewRecords = (data: ReviewRecord[]) => saveToStorage('reviewRecords', data);
+const persistImportHistory = (data: ImportHistoryRecord[]) => saveToStorage('importHistory', data);
 
 export const useQuestionStore = create<QuestionState>((set, get) => ({
   questions: loadFromStorage('questions', mockQuestions),
   errorQuestions: loadFromStorage('errorQuestions', mockErrorQuestions),
   reviewRecords: loadFromStorage('reviewRecords', mockReviewRecords),
+  importHistory: loadFromStorage('importHistory', []),
 
   getErrorReasons: () => errorReasons,
 
@@ -78,6 +83,38 @@ export const useQuestionStore = create<QuestionState>((set, get) => ({
       return { questions: updated };
     });
     return newQs;
+  },
+
+  addImportHistory: (record) => {
+    set(state => {
+      const updated = [record, ...state.importHistory];
+      persistImportHistory(updated);
+      return { importHistory: updated };
+    });
+  },
+
+  undoLastImport: () => {
+    const { importHistory } = get();
+    if (importHistory.length === 0) return null;
+    const last = importHistory[0];
+    set(state => {
+      const updatedEq = state.errorQuestions.filter(
+        eq => !last.addedErrorQuestionIds.includes(eq.id)
+      );
+      const updatedQ = state.questions.filter(
+        q => !last.addedQuestionIds.includes(q.id)
+      );
+      const updatedHistory = state.importHistory.slice(1);
+      persistErrorQuestions(updatedEq);
+      persistQuestions(updatedQ);
+      persistImportHistory(updatedHistory);
+      return {
+        errorQuestions: updatedEq,
+        questions: updatedQ,
+        importHistory: updatedHistory,
+      };
+    });
+    return last;
   },
 
   addErrorQuestion: (eq) => {

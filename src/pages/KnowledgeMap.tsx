@@ -106,6 +106,49 @@ const KnowledgeMap = () => {
   const handleSaveEdit = () => {
     if (!editingNode || !editNodeName.trim()) return;
 
+    if (editNodeParentId === editingNode) {
+      alert('不能将自己设为父级知识点');
+      return;
+    }
+    if (editNodePrerequisites.includes(editingNode)) {
+      alert('不能将自己设为前置依赖');
+      return;
+    }
+    if (editNodeSuccessors.includes(editingNode)) {
+      alert('不能将自己设为后续依赖');
+    }
+    if (editNodePrerequisites.some(id => editNodeSuccessors.includes(id))) {
+      alert('同一个知识点不能同时是前置和后续依赖');
+      return;
+    }
+
+    const checkCircular = (nodeId: string, visited: Set<string>, direction: 'up' | 'down'): boolean => {
+      if (visited.has(nodeId)) return true;
+      visited.add(nodeId);
+      const node = knowledgePoints.find(kp => kp.id === nodeId);
+      if (!node) return false;
+      const nextIds = direction === 'up' ? node.prerequisites : node.successors;
+      return nextIds.some(id => checkCircular(id, new Set(visited), direction));
+    };
+
+    const tempPrereqs = editNodePrerequisites.filter(id => id !== editingNode);
+    for (const preId of tempPrereqs) {
+      const visited = new Set<string>([editingNode]);
+      if (checkCircular(preId, visited, 'up')) {
+        alert('存在循环依赖：前置知识形成了环形引用');
+        return;
+      }
+    }
+
+    const tempSuccessors = editNodeSuccessors.filter(id => id !== editingNode);
+    for (const sucId of tempSuccessors) {
+      const visited = new Set<string>([editingNode]);
+      if (checkCircular(sucId, visited, 'down')) {
+        alert('存在循环依赖：后续知识形成了环形引用');
+        return;
+      }
+    }
+
     const oldPrereqs = editingNodeData?.prerequisites || [];
     const oldSuccessors = editingNodeData?.successors || [];
 
@@ -114,14 +157,16 @@ const KnowledgeMap = () => {
       level: editNodeLevel,
       parentId: editNodeParentId,
       description: editNodeDescription.trim() || `${editNodeName}知识点`,
-      prerequisites: editNodePrerequisites,
-      successors: editNodeSuccessors,
+      prerequisites: editNodePrerequisites.filter(id => id !== editingNode),
+      successors: editNodeSuccessors.filter(id => id !== editingNode),
     });
 
-    const addedPrereqs = editNodePrerequisites.filter(id => !oldPrereqs.includes(id));
-    const removedPrereqs = oldPrereqs.filter(id => !editNodePrerequisites.includes(id));
-    const addedSuccessors = editNodeSuccessors.filter(id => !oldSuccessors.includes(id));
-    const removedSuccessors = oldSuccessors.filter(id => !editNodeSuccessors.includes(id));
+    const safePrereqs = editNodePrerequisites.filter(id => id !== editingNode);
+    const safeSuccessors = editNodeSuccessors.filter(id => id !== editingNode);
+    const addedPrereqs = safePrereqs.filter(id => !oldPrereqs.includes(id));
+    const removedPrereqs = oldPrereqs.filter(id => !safePrereqs.includes(id));
+    const addedSuccessors = safeSuccessors.filter(id => !oldSuccessors.includes(id));
+    const removedSuccessors = oldSuccessors.filter(id => !safeSuccessors.includes(id));
 
     addedPrereqs.forEach(preId => {
       const preKp = knowledgePoints.find(kp => kp.id === preId);
@@ -147,6 +192,11 @@ const KnowledgeMap = () => {
         updateKnowledgePoint(sucId, { prerequisites: sucKp.prerequisites.filter(pid => pid !== editingNode) });
       }
     });
+
+    if (selectedNodeId === editingNode) {
+      setSelectedNodeId(null);
+      setTimeout(() => setSelectedNodeId(editingNode), 50);
+    }
 
     setEditingNode(null);
     setEditNodeName('');
