@@ -1,0 +1,101 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  line-height: 1.6;
+  font-weight: 400;
+  color: #1e293b;
+  background-color: #f8fafc;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: 'Noto Sans SC', system-ui, sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Noto Serif SC', Georgia, serif;
+  font-weight: 600;
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-gradient-to-r from-primary-800 to-primary-900 text-white rounded-lg font-medium
+           hover:from-primary-700 hover:to-primary-800 transition-all duration-200
+           active:scale-95 shadow-md hover:shadow-lg;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-white border border-primary-200 text-primary-800 rounded-lg font-medium
+           hover:bg-primary-50 transition-all duration-200 active:scale-95 shadow-sm;
+  }
+
+  .btn-accent {
+    @apply px-4 py-2 bg-gradient-to-r from-accent-500 to-accent-600 text-white rounded-lg font-medium
+           hover:from-accent-400 hover:to-accent-500 transition-all duration-200
+           active:scale-95 shadow-md hover:shadow-lg;
+  }
+
+  .btn-warning {
+    @apply px-4 py-2 bg-gradient-to-r from-warning-400 to-warning-500 text-white rounded-lg font-medium
+           hover:from-warning-300 hover:to-warning-400 transition-all duration-200
+           active:scale-95 shadow-md;
+  }
+
+  .card {
+    @apply bg-white rounded-xl shadow-card p-6 transition-all duration-200 hover:shadow-card-hover;
+  }
+
+  .card-hover {
+    @apply hover:-translate-y-1 cursor-pointer;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .input {
+    @apply w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2
+           focus:ring-primary-500 focus:border-transparent transition-all duration-200;
+  }
+
+  .select {
+    @apply w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2
+           focus:ring-primary-500 focus:border-transparent bg-white transition-all duration-200;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.animate-stagger-1 { animation-delay: 0.05s; }
+.animate-stagger-2 { animation-delay: 0.1s; }
+.animate-stagger-3 { animation-delay: 0.15s; }
+.animate-stagger-4 { animation-delay: 0.2s; }
+.animate-stagger-5 { animation-delay: 0.25s; }
+.animate-stagger-6 { animation-delay: 0.3s; }
