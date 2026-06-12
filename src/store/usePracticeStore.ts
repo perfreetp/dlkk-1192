@@ -13,6 +13,16 @@ interface PracticeState {
   isFinished: boolean;
   score: number;
   resultQuestions: { isCorrect: boolean }[];
+  previousPractice: {
+    paperId: string;
+    paperTitle: string;
+    score: number;
+    totalQuestions: number;
+    correctCount: number;
+    sourceType: 'retry-wrong' | 'retry-similar' | 'retry-all';
+    sourceQuestionIndex?: number;
+    createdAt: string;
+  } | null;
   generatePaper: () => void;
   startPractice: () => void;
   submitAnswer: (questionIndex: number, answer: number | string) => void;
@@ -20,6 +30,8 @@ interface PracticeState {
   prevQuestion: () => void;
   finishPractice: () => void;
   resetPractice: () => void;
+  setPreviousPractice: (prev: PracticeState['previousPractice']) => void;
+  clearPreviousPractice: () => void;
 }
 
 const defaultConfig: PracticeConfig = {
@@ -144,6 +156,9 @@ export const usePracticeStore = create<PracticeState>((set, get) => ({
   isFinished: false,
   score: 0,
   resultQuestions: [],
+  previousPractice: null,
+  setPreviousPractice: (prev) => set({ previousPractice: prev }),
+  clearPreviousPractice: () => set({ previousPractice: null }),
 
   generatePaper: () => {
     const { config } = get();

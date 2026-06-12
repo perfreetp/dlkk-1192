@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Brain,
@@ -11,6 +11,10 @@ import {
   ChevronRight,
   Link2,
   ArrowRight,
+  History,
+  Undo2,
+  Clock,
+  GitCompareArrows,
 } from 'lucide-react';
 import { KnowledgeGraph } from '@/components/features/KnowledgeGraph';
 import { KnowledgeTree } from '@/components/features/KnowledgeTree';
@@ -31,6 +35,8 @@ const KnowledgeMap = () => {
     updateKnowledgePoint,
     deleteKnowledgePoint,
     buildKnowledgeTree,
+    lastKnowledgeChange,
+    undoLastKnowledgeChange,
   } = useKnowledgeStore();
   const { getMasteryRate } = useQuestionStore();
   const { currentUser } = useAuthStore();
@@ -91,6 +97,43 @@ const KnowledgeMap = () => {
   const editingNodeData = editingNode
     ? knowledgePoints.find(kp => kp.id === editingNode)
     : null;
+
+  const changeDiff = useMemo(() => {
+    if (!lastKnowledgeChange) return null;
+    const { beforeSnapshot, afterSnapshot, kpId } = lastKnowledgeChange;
+    const beforeKp = beforeSnapshot.find(kp => kp.id === kpId);
+    const afterKp = afterSnapshot.find(kp => kp.id === kpId);
+
+    const diffs: { field: string; before: string; after: string }[] = [];
+    if (lastKnowledgeChange.type === 'add') {
+      diffs.push({ field: '操作', before: '(新增知识点)', after: afterKp?.name || '' });
+    } else if (lastKnowledgeChange.type === 'delete') {
+      diffs.push({ field: '操作', before: beforeKp?.name || '', after: '(已删除)' });
+    } else {
+      if (beforeKp && afterKp) {
+        if (beforeKp.name !== afterKp.name) diffs.push({ field: '名称', before: beforeKp.name, after: afterKp.name });
+        if (beforeKp.level !== afterKp.level) diffs.push({ field: '层级', before: `Level ${beforeKp.level}`, after: `Level ${afterKp.level}` });
+        const beforeParent = beforeKp.parentId ? beforeSnapshot.find(kp => kp.id === beforeKp.parentId)?.name || beforeKp.parentId : '(无)';
+        const afterParent = afterKp.parentId ? afterSnapshot.find(kp => kp.id === afterKp.parentId)?.name || afterKp.parentId : '(无)';
+        if (beforeParent !== afterParent) diffs.push({ field: '父级节点', before: beforeParent, after: afterParent });
+        const beforePre = beforeKp.prerequisites.map(id => beforeSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
+        const afterPre = afterKp.prerequisites.map(id => afterSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
+        if (beforePre !== afterPre) diffs.push({ field: '前置知识', before: beforePre, after: afterPre });
+        const beforeSuc = beforeKp.successors.map(id => beforeSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
+        const afterSuc = afterKp.successors.map(id => afterSnapshot.find(kp => kp.id === id)?.name || id).sort().join(', ') || '(无)';
+        if (beforeSuc !== afterSuc) diffs.push({ field: '后续知识', before: beforeSuc, after: afterSuc });
+      }
+    }
+    return diffs;
+  }, [lastKnowledgeChange]);
+
+  const formatTime = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch { return iso; }
+  };
 
   useEffect(() => {
     if (editingNode && editingNodeData) {
@@ -348,6 +391,12 @@ const KnowledgeMap = () => {
 
               <div className="mb-4">
                 <p className="text-sm text-gray-600">{selectedNode.description}</p>
+                {selectedNode.updatedAt && (
+                  <p className="text-xs text-gray-400 mt-2 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    最近修改：{formatTime(selectedNode.updatedAt)}
+                  </p>
+                )}
               </div>
 
               <div className="mb-4">
@@ -465,6 +514,79 @@ const KnowledgeMap = () => {
               先掌握左侧的前置知识点，再学习右侧的后续知识点，循序渐进效果更好。
             </p>
           </div>
+
+          {role === 'teacher' && lastKnowledgeChange && (
+            <div className="card border-amber-200 bg-amber-50/30">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                    <History className="w-4 h-4 text-amber-600" />
+                    最近修改
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {formatTime(lastKnowledgeChange.changedAt)}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (confirm(`确认撤销对「${lastKnowledgeChange.kpName || lastKnowledgeChange.kpId}」的修改？`)) {
+                      const restored = undoLastKnowledgeChange();
+                      if (restored) {
+                        setSelectedNodeId(null);
+                        setTimeout(() => {
+                          if (lastKnowledgeChange.type !== 'delete') {
+                            setSelectedNodeId(lastKnowledgeChange.kpId);
+                          }
+                        }, 50);
+                      }
+                    }
+                  }}
+                  className="flex items-center gap-1 px-2 py-1 rounded text-xs text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                  撤销
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className={`px-1.5 py-0.5 rounded font-medium ${
+                    lastKnowledgeChange.type === 'add' ? 'bg-emerald-100 text-emerald-700' :
+                    lastKnowledgeChange.type === 'delete' ? 'bg-red-100 text-red-700' :
+                    'bg-blue-100 text-blue-700'
+                  }`}>
+                    {lastKnowledgeChange.type === 'add' ? '新增' :
+                     lastKnowledgeChange.type === 'delete' ? '删除' : '更新'}
+                  </span>
+                  <span className="text-gray-700 font-medium">{lastKnowledgeChange.kpName || lastKnowledgeChange.kpId}</span>
+                </div>
+
+                {changeDiff && changeDiff.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <p className="text-xs text-gray-500 flex items-center gap-1 mb-1">
+                      <GitCompareArrows className="w-3 h-3" />
+                      修改前后对比
+                    </p>
+                    {changeDiff.map((d, i) => (
+                      <div key={i} className="p-2 bg-white rounded-lg text-xs">
+                        <p className="text-gray-500 mb-1">{d.field}</p>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-red-600 bg-red-50 px-1.5 py-0.5 rounded flex-1 truncate">
+                            {d.before || '(空)'}
+                          </span>
+                          <ArrowRight className="w-3 h-3 text-gray-400 shrink-0" />
+                          <span className="text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex-1 truncate">
+                            {d.after || '(空)'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

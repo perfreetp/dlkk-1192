@@ -17,6 +17,8 @@ import {
   RotateCw,
   Eye,
   EyeOff,
+  ArrowLeft,
+  Link2,
 } from 'lucide-react';
 import { DifficultyBadge, QuestionTypeBadge, ErrorReasonBadge } from '@/components/ui/Badge';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -41,6 +43,7 @@ const Practice = () => {
     isFinished,
     score,
     resultQuestions,
+    previousPractice,
     generatePaper,
     startPractice,
     submitAnswer,
@@ -48,6 +51,8 @@ const Practice = () => {
     prevQuestion,
     finishPractice,
     resetPractice,
+    setPreviousPractice,
+    clearPreviousPractice,
   } = usePracticeStore();
 
   const studentId = currentUser?.id || 'stu-1';
@@ -59,11 +64,25 @@ const Practice = () => {
   const [textInputs, setTextInputs] = useState<Record<number, string>>({});
   const [reportViewQuestion, setReportViewQuestion] = useState<number | null>(null);
   const [addedToReview, setAddedToReview] = useState<Set<number>>(new Set());
+  const [previousSnapshot, setPreviousSnapshot] = useState<{
+    paper: typeof generatedPaper;
+    answers: typeof answers;
+    resultQuestions: typeof resultQuestions;
+    score: number;
+    sourceType: 'retry-wrong' | 'retry-similar' | 'retry-all';
+    sourceQuestionIndex?: number;
+  } | null>(null);
+  const [viewingPrevious, setViewingPrevious] = useState(false);
 
   const subjectKnowledgePoints = useMemo(() =>
     knowledgePoints.filter(kp => kp.subjectId === selectedSubjectId),
     [knowledgePoints, selectedSubjectId]
   );
+
+  const displayPaper = viewingPrevious && previousSnapshot ? previousSnapshot.paper : generatedPaper;
+  const displayAnswers = viewingPrevious && previousSnapshot ? previousSnapshot.answers : answers;
+  const displayResults = viewingPrevious && previousSnapshot ? previousSnapshot.resultQuestions : resultQuestions;
+  const displayScore = viewingPrevious && previousSnapshot ? previousSnapshot.score : score;
 
   const availableQuestions = generatedPaper?.questions || [];
   const currentQuestion = availableQuestions[currentIndex];
@@ -634,43 +653,101 @@ const Practice = () => {
 
       {isFinished && generatedPaper && (
         <div className="max-w-4xl mx-auto space-y-6">
+          {previousPractice && !previousSnapshot && (
+            <div className="card p-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <Link2 className="w-5 h-5 text-primary-500" />
+                <div className="text-sm">
+                  <span className="text-gray-500">本次试卷基于上一套练习生成：</span>
+                  <span className="font-medium text-gray-800">{previousPractice.paperTitle}</span>
+                  <span className="text-gray-400 mx-2">|</span>
+                  <span className="text-accent-600 font-medium">{previousPractice.score}分</span>
+                  <span className="text-gray-400 mx-1">/</span>
+                  <span className="text-gray-500">{previousPractice.totalQuestions}题，答对 {previousPractice.correctCount}</span>
+                  {previousPractice.sourceType === 'retry-similar' && previousPractice.sourceQuestionIndex !== undefined && (
+                    <>
+                      <span className="text-gray-400 mx-2">|</span>
+                      <span className="text-xs text-gray-500">针对第 {previousPractice.sourceQuestionIndex + 1} 题的同类练习</span>
+                    </>
+                  )}
+                  {previousPractice.sourceType === 'retry-wrong' && (
+                    <>
+                      <span className="text-gray-400 mx-2">|</span>
+                      <span className="text-xs text-gray-500">基于错题知识点重新组卷</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setViewingPrevious(true);
+                }}
+                className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 transition-colors whitespace-nowrap"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                查看上一套报告
+              </button>
+            </div>
+          )}
+          {previousSnapshot && viewingPrevious && (
+            <div className="card p-4 flex items-center justify-between gap-3 border-2 border-amber-300 bg-amber-50/30">
+              <div className="flex items-center gap-3 flex-wrap">
+                <ArrowLeft className="w-5 h-5 text-amber-600" />
+                <div className="text-sm">
+                  <span className="text-gray-600 font-medium">正在查看上一套练习报告：</span>
+                  <span className="text-gray-800">{previousSnapshot.paper?.title}</span>
+                  <span className="text-gray-400 mx-2">|</span>
+                  <span className="text-accent-600 font-bold">{previousSnapshot.score}分</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setViewingPrevious(false)}
+                className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 transition-colors whitespace-nowrap"
+              >
+                返回当前报告
+              </button>
+            </div>
+          )}
+
           <div className="card text-center">
             <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-br from-accent-400 to-accent-500 text-white flex items-center justify-center">
               <Award className="w-12 h-12" />
             </div>
-            <h2 className="text-2xl font-bold text-gray-800 mb-2">练习完成！</h2>
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">
+              {viewingPrevious ? '上一套练习结果' : '练习完成！'}
+            </h2>
 
             <div className="text-6xl font-bold text-primary-900 mb-2">
-              {score}
+              {displayScore}
               <span className="text-2xl text-gray-400">分</span>
             </div>
 
             <div className="grid grid-cols-3 gap-4 mt-8">
               <div className="p-4 bg-emerald-50 rounded-xl">
                 <p className="text-2xl font-bold text-emerald-600">
-                  {resultQuestions.filter(r => r.isCorrect).length}
+                  {displayResults.filter(r => r.isCorrect).length}
                 </p>
                 <p className="text-xs text-emerald-500 mt-1">答对</p>
               </div>
               <div className="p-4 bg-red-50 rounded-xl">
                 <p className="text-2xl font-bold text-red-600">
-                  {resultQuestions.filter(r => !r.isCorrect).length}
+                  {displayResults.filter(r => !r.isCorrect).length}
                 </p>
                 <p className="text-xs text-red-500 mt-1">答错</p>
               </div>
               <div className="p-4 bg-gray-50 rounded-xl">
                 <p className="text-2xl font-bold text-gray-600">
-                  {answers.filter(a => a === undefined || a === '').length}
+                  {displayAnswers.filter(a => a === undefined || a === '').length}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">未答</p>
               </div>
             </div>
 
-            {resultQuestions.some(r => !r.isCorrect) && (
+            {displayResults.some(r => !r.isCorrect) && (
               <div className="mt-6 p-4 bg-amber-50 rounded-xl border border-amber-200">
                 <p className="text-sm text-amber-700">
                   <AlertCircle className="w-4 h-4 inline mr-1.5 -mt-0.5" />
-                  本次练习有 <strong>{resultQuestions.filter(r => !r.isCorrect).length}</strong> 道错题，
+                  本次练习有 <strong>{displayResults.filter(r => !r.isCorrect).length}</strong> 道错题，
                   可在下方报告中逐一查看解析并加入复习计划
                 </p>
               </div>
@@ -678,44 +755,63 @@ const Practice = () => {
           </div>
 
           <div className="card">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
               <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                 <FileText className="w-5 h-5 text-primary-500" />
-                练习报告
+                {viewingPrevious ? '上一套练习报告' : '练习报告'}
               </h3>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    const wrongKpIds = [...new Set(
-                      generatedPaper.questions
-                        .filter((_, i) => !resultQuestions[i].isCorrect)
-                        .map(q => q.knowledgePointId)
-                    )];
-                    if (wrongKpIds.length > 0) {
-                      setSelectedKnowledgeIds(wrongKpIds);
-                      setConfig({ ...config, knowledgePointIds: wrongKpIds, subjectId: selectedSubjectId, studentId });
-                      resetPractice();
-                      setTimeout(() => generatePaper(), 100);
-                    } else {
-                      handleRetry();
-                    }
-                  }}
-                  className="btn-secondary flex items-center gap-2"
-                >
-                  <RotateCw className="w-4 h-4" />
-                  按错题知识点重新组卷
-                </button>
-                <button onClick={handleRetry} className="btn-secondary flex items-center gap-2">
-                  <RefreshCw className="w-4 h-4" />
-                  再练一组
-                </button>
-              </div>
+              {!viewingPrevious && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      const wrongKpIds = [...new Set(
+                        generatedPaper.questions
+                          .filter((_, i) => !resultQuestions[i].isCorrect)
+                          .map(q => q.knowledgePointId)
+                      )];
+                      if (wrongKpIds.length > 0) {
+                        setPreviousSnapshot({
+                          paper: generatedPaper,
+                          answers: [...answers],
+                          resultQuestions: [...resultQuestions],
+                          score,
+                          sourceType: 'retry-wrong',
+                        });
+                        setPreviousPractice({
+                          paperId: generatedPaper.id,
+                          paperTitle: generatedPaper.title,
+                          score,
+                          totalQuestions: generatedPaper.questions.length,
+                          correctCount: resultQuestions.filter(r => r.isCorrect).length,
+                          sourceType: 'retry-wrong',
+                          createdAt: new Date().toISOString(),
+                        });
+                        setSelectedKnowledgeIds(wrongKpIds);
+                        setConfig({ ...config, knowledgePointIds: wrongKpIds, subjectId: selectedSubjectId, studentId });
+                        resetPractice();
+                        setViewingPrevious(false);
+                        setTimeout(() => generatePaper(), 100);
+                      } else {
+                        handleRetry();
+                      }
+                    }}
+                    className="btn-secondary flex items-center gap-2"
+                  >
+                    <RotateCw className="w-4 h-4" />
+                    按错题知识点重新组卷
+                  </button>
+                  <button onClick={handleRetry} className="btn-secondary flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4" />
+                    再练一组
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">
-              {generatedPaper.questions.map((q, idx) => {
-                const isCorrect = resultQuestions[idx]?.isCorrect ?? false;
-                const userAnswer = answers[idx];
+              {displayPaper?.questions.map((q, idx) => {
+                const isCorrect = displayResults[idx]?.isCorrect ?? false;
+                const userAnswer = displayAnswers[idx];
                 const kp = knowledgePoints.find(k => k.id === q.knowledgePointId);
                 const isExpanded = reportViewQuestion === idx;
                 const isInReview = addedToReview.has(idx);
@@ -854,7 +950,7 @@ const Practice = () => {
                           )}
                         </div>
 
-                        {!isCorrect && (
+                        {!isCorrect && !viewingPrevious && (
                           <div className="flex gap-2">
                             <button
                               onClick={(e) => {
@@ -875,9 +971,28 @@ const Practice = () => {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (q.knowledgePointId) {
+                                  setPreviousSnapshot({
+                                    paper: generatedPaper,
+                                    answers: [...answers],
+                                    resultQuestions: [...resultQuestions],
+                                    score,
+                                    sourceType: 'retry-similar',
+                                    sourceQuestionIndex: idx,
+                                  });
+                                  setPreviousPractice({
+                                    paperId: generatedPaper.id,
+                                    paperTitle: generatedPaper.title,
+                                    score,
+                                    totalQuestions: generatedPaper.questions.length,
+                                    correctCount: resultQuestions.filter(r => r.isCorrect).length,
+                                    sourceType: 'retry-similar',
+                                    sourceQuestionIndex: idx,
+                                    createdAt: new Date().toISOString(),
+                                  });
                                   setSelectedKnowledgeIds([q.knowledgePointId]);
                                   setConfig({ ...config, knowledgePointIds: [q.knowledgePointId], subjectId: selectedSubjectId, studentId });
                                   resetPractice();
+                                  setViewingPrevious(false);
                                   setTimeout(() => generatePaper(), 100);
                                 }
                               }}
@@ -896,9 +1011,11 @@ const Practice = () => {
             </div>
 
             <div className="flex gap-3 mt-8">
-              <button onClick={handleRetry} className="flex-1 btn-secondary">
-                再练一组
-              </button>
+              {!viewingPrevious && (
+                <button onClick={handleRetry} className="flex-1 btn-secondary">
+                  再练一组
+                </button>
+              )}
               <button
                 onClick={() => {
                   resetPractice();

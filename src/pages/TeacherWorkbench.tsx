@@ -26,7 +26,7 @@ import { useReportStore } from '@/store/useReportStore';
 import { formatDate } from '@/utils/date';
 import { generateParentReport } from '@/utils/export';
 import { generateId } from '@/utils/calculation';
-import type { ErrorReason, ErrorQuestion, Question } from '@/types';
+import type { ErrorReason, ErrorQuestion, Question, ImportDetailRecord } from '@/types';
 
 const errorReasonKeywords: Record<ErrorReason, string[]> = {
   '概念不清': ['概念', '定义', '不理解', '混淆', '不知道'],
@@ -77,11 +77,14 @@ const TeacherWorkbench = () => {
     questionContent: string;
     studentAnswer: string;
     correctAnswer: string;
+    score: number;
+    fullScore: number;
     isWrong: boolean;
     errorReason: string;
     knowledgePointName: string;
   }>>([]);
-  const [importResult, setImportResult] = useState<{ total: number; added: number; skipped: number } | null>(null);
+  const [passThreshold, setPassThreshold] = useState(60);
+  const [importResult, setImportResult] = useState<{ total: number; added: number; skipped: number; addedDetails: ImportDetailRecord[]; skippedDetails: ImportDetailRecord[] } | null>(null);
   const [lastImportFileName, setLastImportFileName] = useState('');
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -124,8 +127,26 @@ const TeacherWorkbench = () => {
     if (taskFilter.status) {
       tasks = tasks.filter(t => t.status === taskFilter.status);
     }
-    return tasks;
+    const now = Date.now();
+    const threeDays = 3 * 24 * 60 * 60 * 1000;
+    return tasks.sort((a, b) => {
+      if (a.status !== b.status) {
+        return a.status === 'pending' ? -1 : 1;
+      }
+      const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+      const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+      return aDue - bDue;
+    });
   }, [commentTasks, taskFilter, students, knowledgePoints]);
+
+  const isTaskNearDue = (task: typeof commentTasks[number]): 'overdue' | 'urgent' | 'soon' | 'normal' => {
+    if (task.status === 'completed' || !task.dueDate) return 'normal';
+    const diff = new Date(task.dueDate).getTime() - Date.now();
+    if (diff < 0) return 'overdue';
+    if (diff <= 24 * 60 * 60 * 1000) return 'urgent';
+    if (diff <= 3 * 24 * 60 * 60 * 1000) return 'soon';
+    return 'normal';
+  };
 
   const selectedStudent = selectedStudentId
     ? students.find(s => s.id === selectedStudentId)
@@ -273,11 +294,14 @@ const TeacherWorkbench = () => {
           const qContent = row['题目内容'] || row['content'] || row['题目'] || `题目 ${qId}`;
           const sAnswer = row['学生答案'] || row['studentAnswer'] || row['作答'] || '';
           const cAnswer = row['正确答案'] || row['correctAnswer'] || row['答案'] || '';
-          const score = Number(row['得分'] || row['score'] || sAnswer === cAnswer ? 1 : 0);
-          const totalScore = Number(row['满分'] || row['totalScore'] || row['总分'] || 1);
+          const rawScore = row['得分'] !== undefined && row['得分'] !== '' ? row['score'] !== undefined && row['score'] !== '' ? (row['得分'] || row['score']) : row['得分'] : undefined;
+          const rawTotal = row['满分'] !== undefined && row['满分'] !== '' ? row['totalScore'] !== undefined && row['totalScore'] !== '' ? (row['满分'] || row['totalScore'] || row['总分']) : row['满分'] : undefined;
+          const score = rawScore !== undefined ? Number(rawScore) : (sAnswer === cAnswer ? 1 : 0);
+          const totalScore = rawTotal !== undefined ? Number(rawTotal) : 1;
           const reason = row['错因分析'] || row['errorReason'] || inferErrorReason(qContent + ' ' + sAnswer);
           const kpName = row['知识点标签'] || row['knowledgePoint'] || row['知识点'] || findKnowledgePointId(qContent, kpOptions) || '';
           const kp = kpOptions.find(k => k.name === kpName) || kpOptions.find(k => qContent.includes(k.name));
+          const isWrong = totalScore > 0 ? (score / totalScore) * 100 < passThreshold : sAnswer !== cAnswer;
 
           return {
             studentName,
@@ -285,7 +309,9 @@ const TeacherWorkbench = () => {
             questionContent: qContent,
             studentAnswer: sAnswer,
             correctAnswer: cAnswer,
-            isWrong: score < totalScore * 0.6,
+            score,
+            fullScore: totalScore,
+            isWrong,
             errorReason: reason,
             knowledgePointName: kp?.name || kpName,
           };
@@ -307,10 +333,22 @@ const TeacherWorkbench = () => {
     const wrongRecords = importPreview.filter(r => r.isWrong);
     const toImport: Array<Omit<ErrorQuestion, 'id'>> = [];
     const newQuestionsToAdd: Array<Omit<Question, 'id'>> = [];
+    const addedDetails: ImportDetailRecord[] = [];
+    const skippedDetails: ImportDetailRecord[] = [];
 
     wrongRecords.forEach(record => {
       const student = students.find(s => s.name === record.studentName);
-      if (!student) return;
+      if (!student) {
+        skippedDetails.push({
+          studentName: record.studentName,
+          questionId: record.questionId,
+          questionContent: record.questionContent,
+          score: record.score,
+          fullScore: record.fullScore,
+          reason: '未找到匹配的学员',
+        });
+        return;
+      }
 
       let question = questions.find(q => q.id === record.questionId);
       const kp = knowledgePoints.find(k => k.name === record.knowledgePointName);
@@ -337,9 +375,21 @@ const TeacherWorkbench = () => {
       const existing = errorQuestions.find(
         eq => eq.studentId === student.id && eq.questionId === record.questionId
       );
-      if (existing) return;
+      if (existing) {
+        skippedDetails.push({
+          studentId: student.id,
+          studentName: student.name,
+          questionId: record.questionId,
+          questionContent: record.questionContent,
+          knowledgePointId: kp?.id,
+          score: record.score,
+          fullScore: record.fullScore,
+          reason: '该学员此题已在错题库中',
+        });
+        return;
+      }
 
-      toImport.push({
+      const eqPayload: Omit<ErrorQuestion, 'id'> = {
         studentId: student.id,
         questionId: question.id,
         knowledgePointId: kp?.id || question.knowledgePointId,
@@ -351,6 +401,28 @@ const TeacherWorkbench = () => {
         reviewCount: 0,
         masteryRate: kp ? getMasteryRate(kp.id, student.id) : 40,
         sourceExam: '导入考试',
+      };
+      toImport.push(eqPayload);
+      addedDetails.push({
+        studentId: student.id,
+        studentName: student.name,
+        questionId: question.id,
+        questionContent: record.questionContent,
+        knowledgePointId: kp?.id,
+        score: record.score,
+        fullScore: record.fullScore,
+        reason: `得分率 ${record.fullScore > 0 ? Math.round((record.score / record.fullScore) * 100) : 0}%，低于阈值 ${passThreshold}%`,
+      });
+    });
+
+    importPreview.filter(r => !r.isWrong).forEach(record => {
+      skippedDetails.push({
+        studentName: record.studentName,
+        questionId: record.questionId,
+        questionContent: record.questionContent,
+        score: record.score,
+        fullScore: record.fullScore,
+        reason: `得分率 ${record.fullScore > 0 ? Math.round((record.score / record.fullScore) * 100) : 100}%，已达标（阈值 ${passThreshold}%）`,
       });
     });
 
@@ -369,15 +441,20 @@ const TeacherWorkbench = () => {
       importDate: new Date().toISOString(),
       totalRecords: importPreview.length,
       addedCount: toImport.length,
-      skippedCount: importPreview.length - toImport.length,
+      skippedCount: skippedDetails.length,
+      passThreshold,
       addedErrorQuestionIds: addedEqIds,
       addedQuestionIds,
+      addedDetails,
+      skippedDetails,
     });
 
     setImportResult({
       total: importPreview.length,
       added: toImport.length,
-      skipped: importPreview.length - toImport.length,
+      skipped: skippedDetails.length,
+      addedDetails,
+      skippedDetails,
     });
     showToast('success', `导入完成：新增 ${toImport.length} 道错题`);
   };
@@ -886,12 +963,17 @@ const TeacherWorkbench = () => {
             {filteredCommentTasks.map(task => {
               const student = students.find(s => s.id === task.studentId);
               const kp = knowledgePoints.find(k => k.id === task.knowledgePointId);
+              const nearDue = isTaskNearDue(task);
 
               return (
                 <div
                   key={task.id}
                   className={`card transition-all ${
                     task.status === 'completed' ? 'opacity-70' : ''
+                  } ${
+                    nearDue === 'overdue' ? 'ring-2 ring-red-400 bg-red-50/30' :
+                    nearDue === 'urgent' ? 'ring-2 ring-orange-400 bg-orange-50/30' :
+                    nearDue === 'soon' ? 'ring-1 ring-amber-300 bg-amber-50/10' : ''
                   }`}
                 >
                   <div className="flex items-start gap-3 mb-3">
@@ -908,9 +990,26 @@ const TeacherWorkbench = () => {
                       )}
                     </div>
                     <div className="flex-1">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <h4 className="font-bold text-gray-800">{task.title}</h4>
-                        <StatusBadge status={task.status === 'pending' ? 'pending' : 'mastered'} />
+                        <div className="flex items-center gap-1.5">
+                          {nearDue === 'overdue' && (
+                            <span className="text-xs text-white bg-red-500 px-1.5 py-0.5 rounded">
+                              已逾期
+                            </span>
+                          )}
+                          {nearDue === 'urgent' && (
+                            <span className="text-xs text-white bg-orange-500 px-1.5 py-0.5 rounded">
+                              今日到期
+                            </span>
+                          )}
+                          {nearDue === 'soon' && (
+                            <span className="text-xs text-white bg-amber-500 px-1.5 py-0.5 rounded">
+                              3天内到期
+                            </span>
+                          )}
+                          <StatusBadge status={task.status === 'pending' ? 'pending' : 'mastered'} />
+                        </div>
                       </div>
                       <p className="text-sm text-gray-500 mt-0.5">{task.description}</p>
                     </div>
@@ -925,7 +1024,11 @@ const TeacherWorkbench = () => {
                       <BookOpen className="w-4 h-4" />
                       {kp?.name || '未指定'}
                     </span>
-                    <span className="flex items-center gap-1">
+                    <span className={`flex items-center gap-1 ${
+                      nearDue === 'overdue' ? 'text-red-600 font-medium' :
+                      nearDue === 'urgent' ? 'text-orange-600 font-medium' :
+                      nearDue === 'soon' ? 'text-amber-600 font-medium' : ''
+                    }`}>
                       <Clock className="w-4 h-4" />
                       {task.dueDate ? formatDate(task.dueDate) : '无截止日期'}
                     </span>
@@ -1023,11 +1126,33 @@ const TeacherWorkbench = () => {
 
           {importPreview.length > 0 && (
             <div className="mt-6">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="font-medium text-gray-700">
-                  数据预览 ({importPreview.length} 条记录，
-                  <span className="text-red-500"> 错题 {importPreview.filter(r => r.isWrong).length} 道</span>)
-                </h4>
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <h4 className="font-medium text-gray-700">
+                    数据预览 ({importPreview.length} 条记录，
+                    <span className="text-red-500"> 错题 {importPreview.filter(r => r.isWrong).length} 道</span>，
+                    <span className="text-emerald-500"> 达标 {importPreview.filter(r => !r.isWrong).length} 道</span>)
+                  </h4>
+                  <div className="flex items-center gap-2 text-sm">
+                    <label className="text-gray-500">错题阈值(%)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={passThreshold}
+                      onChange={(e) => {
+                        const val = Math.max(0, Math.min(100, Number(e.target.value)));
+                        setPassThreshold(val);
+                        setImportPreview(prev => prev.map(r => ({
+                          ...r,
+                          isWrong: r.fullScore > 0 ? (r.score / r.fullScore) * 100 < val : r.studentAnswer !== r.correctAnswer,
+                        })));
+                      }}
+                      className="w-20 px-2 py-1 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary-400 focus:outline-none"
+                    />
+                    <span className="text-gray-400 text-xs">低于此得分率视为错题</span>
+                  </div>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
@@ -1052,6 +1177,7 @@ const TeacherWorkbench = () => {
                         <th className="px-3 py-2 font-medium">题目</th>
                         <th className="px-3 py-2 font-medium">学生答案</th>
                         <th className="px-3 py-2 font-medium">正确答案</th>
+                        <th className="px-3 py-2 font-medium">得分/满分</th>
                         <th className="px-3 py-2 font-medium">结果</th>
                         <th className="px-3 py-2 font-medium">错因</th>
                         <th className="px-3 py-2 font-medium">知识点</th>
@@ -1065,13 +1191,21 @@ const TeacherWorkbench = () => {
                           <td className="px-3 py-2">{row.studentAnswer.slice(0, 10)}</td>
                           <td className="px-3 py-2">{row.correctAnswer.slice(0, 10)}</td>
                           <td className="px-3 py-2">
+                            <span className={row.isWrong ? 'text-red-600 font-medium' : 'text-emerald-600'}>
+                              {row.score}/{row.fullScore}
+                            </span>
+                            <span className="ml-1 text-xs text-gray-400">
+                              ({row.fullScore > 0 ? Math.round((row.score / row.fullScore) * 100) : 0}%)
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
                             {row.isWrong ? (
                               <span className="text-red-600 font-medium">错误</span>
                             ) : (
-                              <span className="text-emerald-600 font-medium">正确</span>
+                              <span className="text-emerald-600 font-medium">达标</span>
                             )}
                           </td>
-                          <td className="px-3 py-2">{row.errorReason}</td>
+                          <td className="px-3 py-2">{row.isWrong ? row.errorReason : '—'}</td>
                           <td className="px-3 py-2">{row.knowledgePointName}</td>
                         </tr>
                       ))}
@@ -1089,7 +1223,7 @@ const TeacherWorkbench = () => {
 
           {importResult && (
             <div className="mt-4 p-4 bg-emerald-50 rounded-xl border border-emerald-200">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-3">
                 <h4 className="font-medium text-emerald-700 flex items-center gap-2">
                   <CheckCircle className="w-5 h-5" />
                   导入完成
@@ -1109,11 +1243,65 @@ const TeacherWorkbench = () => {
                   撤回本次导入
                 </button>
               </div>
-              <ul className="text-sm text-emerald-600 space-y-1">
+              <ul className="text-sm text-emerald-600 space-y-1 mb-3">
                 <li>• 总记录数：{importResult.total} 条</li>
                 <li>• 新增错题：{importResult.added} 道（可在错题库查看）</li>
-                <li>• 跳过记录：{importResult.skipped} 条（已存在或无匹配学员）</li>
+                <li>• 跳过记录：{importResult.skipped} 条</li>
               </ul>
+              {importResult.addedDetails.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs font-medium text-emerald-700 mb-1.5">新增错题明细：</p>
+                  <div className="max-h-40 overflow-y-auto bg-white rounded-lg border border-emerald-100">
+                    <table className="w-full text-xs">
+                      <thead className="bg-emerald-50 sticky top-0">
+                        <tr>
+                          <th className="px-2 py-1 text-left text-emerald-600">学员</th>
+                          <th className="px-2 py-1 text-left text-emerald-600">题目</th>
+                          <th className="px-2 py-1 text-left text-emerald-600">得分</th>
+                          <th className="px-2 py-1 text-left text-emerald-600">原因</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importResult.addedDetails.map((d, i) => (
+                          <tr key={i} className="border-t border-emerald-50">
+                            <td className="px-2 py-1 text-gray-700">{d.studentName}</td>
+                            <td className="px-2 py-1 text-gray-600 max-w-[180px] truncate">{(d.questionContent || '').slice(0, 20)}...</td>
+                            <td className="px-2 py-1 text-gray-700">{d.score}/{d.fullScore}</td>
+                            <td className="px-2 py-1 text-emerald-600">{d.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {importResult.skippedDetails.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-gray-600 mb-1.5">跳过敏细：</p>
+                  <div className="max-h-40 overflow-y-auto bg-white rounded-lg border border-gray-200">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-2 py-1 text-left text-gray-500">学员</th>
+                          <th className="px-2 py-1 text-left text-gray-500">题目</th>
+                          <th className="px-2 py-1 text-left text-gray-500">得分</th>
+                          <th className="px-2 py-1 text-left text-gray-500">跳过原因</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importResult.skippedDetails.map((d, i) => (
+                          <tr key={i} className="border-t border-gray-100">
+                            <td className="px-2 py-1 text-gray-700">{d.studentName}</td>
+                            <td className="px-2 py-1 text-gray-600 max-w-[180px] truncate">{(d.questionContent || '').slice(0, 20)}...</td>
+                            <td className="px-2 py-1 text-gray-700">{d.score}/{d.fullScore}</td>
+                            <td className="px-2 py-1 text-gray-500">{d.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1149,7 +1337,7 @@ const TeacherWorkbench = () => {
                     </div>
                     {expandedHistoryId === record.id && (
                       <div className="mt-3 pt-3 border-t border-gray-200">
-                        <div className="grid grid-cols-3 gap-3 text-sm">
+                        <div className="grid grid-cols-3 gap-3 text-sm mb-3">
                           <div className="text-center p-2 bg-white rounded-lg">
                             <p className="text-lg font-bold text-gray-700">{record.totalRecords}</p>
                             <p className="text-xs text-gray-500">总记录</p>
@@ -1163,17 +1351,65 @@ const TeacherWorkbench = () => {
                             <p className="text-xs text-gray-400">跳过</p>
                           </div>
                         </div>
-                        {record.addedErrorQuestionIds.length > 0 && (
-                          <div className="mt-2">
-                            <p className="text-xs text-gray-500 mb-1">新增错题 ID：</p>
-                            <div className="flex flex-wrap gap-1">
-                              {record.addedErrorQuestionIds.slice(0, 10).map(id => (
-                                <span key={id} className="text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">
-                                  {id.slice(0, 8)}
-                                </span>
-                              ))}
-                              {record.addedErrorQuestionIds.length > 10 && (
-                                <span className="text-xs text-gray-400">...等 {record.addedErrorQuestionIds.length} 条</span>
+                        {record.passThreshold !== undefined && (
+                          <p className="text-xs text-gray-500 mb-2">错题阈值：低于 {record.passThreshold}% 视为错题</p>
+                        )}
+                        {record.addedDetails && record.addedDetails.length > 0 && (
+                          <div className="mb-3">
+                            <p className="text-xs font-medium text-gray-700 mb-1.5">新增错题：</p>
+                            <div className="max-h-36 overflow-y-auto bg-white rounded-lg border border-gray-100">
+                              <table className="w-full text-xs">
+                                <thead className="bg-gray-50 sticky top-0">
+                                  <tr>
+                                    <th className="px-2 py-1 text-left text-gray-500">学员</th>
+                                    <th className="px-2 py-1 text-left text-gray-500">题目</th>
+                                    <th className="px-2 py-1 text-left text-gray-500">得分</th>
+                                    <th className="px-2 py-1 text-left text-gray-500">原因</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {record.addedDetails.slice(0, 20).map((d, i) => (
+                                    <tr key={i} className="border-t border-gray-100">
+                                      <td className="px-2 py-1 text-gray-700">{d.studentName}</td>
+                                      <td className="px-2 py-1 text-gray-600 max-w-[160px] truncate">{(d.questionContent || '').slice(0, 18)}...</td>
+                                      <td className="px-2 py-1 text-gray-700">{d.score}/{d.fullScore}</td>
+                                      <td className="px-2 py-1 text-emerald-600">{d.reason}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              {record.addedDetails.length > 20 && (
+                                <p className="text-xs text-gray-400 text-center py-1 border-t border-gray-100">...等 {record.addedDetails.length} 条</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {record.skippedDetails && record.skippedDetails.length > 0 && (
+                          <div className="mb-3">
+                            <p className="text-xs font-medium text-gray-700 mb-1.5">跳过记录：</p>
+                            <div className="max-h-36 overflow-y-auto bg-white rounded-lg border border-gray-100">
+                              <table className="w-full text-xs">
+                                <thead className="bg-gray-50 sticky top-0">
+                                  <tr>
+                                    <th className="px-2 py-1 text-left text-gray-500">学员</th>
+                                    <th className="px-2 py-1 text-left text-gray-500">题目</th>
+                                    <th className="px-2 py-1 text-left text-gray-500">得分</th>
+                                    <th className="px-2 py-1 text-left text-gray-500">跳过原因</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {record.skippedDetails.slice(0, 20).map((d, i) => (
+                                    <tr key={i} className="border-t border-gray-100">
+                                      <td className="px-2 py-1 text-gray-700">{d.studentName}</td>
+                                      <td className="px-2 py-1 text-gray-600 max-w-[160px] truncate">{(d.questionContent || '').slice(0, 18)}...</td>
+                                      <td className="px-2 py-1 text-gray-700">{d.score}/{d.fullScore}</td>
+                                      <td className="px-2 py-1 text-gray-500">{d.reason}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              {record.skippedDetails.length > 20 && (
+                                <p className="text-xs text-gray-400 text-center py-1 border-t border-gray-100">...等 {record.skippedDetails.length} 条</p>
                               )}
                             </div>
                           </div>

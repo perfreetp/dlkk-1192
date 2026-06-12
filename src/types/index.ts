@@ -160,6 +160,17 @@ export interface ErrorDistributionItem {
   color: string;
 }
 
+export interface ImportDetailRecord {
+  studentId?: string;
+  studentName?: string;
+  questionId?: string;
+  questionContent?: string;
+  knowledgePointId?: string;
+  score?: number;
+  fullScore?: number;
+  reason?: string;
+}
+
 export interface ImportHistoryRecord {
   id: string;
   fileName: string;
@@ -167,8 +178,11 @@ export interface ImportHistoryRecord {
   totalRecords: number;
   addedCount: number;
   skippedCount: number;
+  passThreshold: number;
   addedErrorQuestionIds: string[];
   addedQuestionIds: string[];
+  addedDetails: ImportDetailRecord[];
+  skippedDetails: ImportDetailRecord[];
 }
 
 export interface PracticeConfig {

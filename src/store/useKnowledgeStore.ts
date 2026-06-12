@@ -32,6 +32,15 @@ interface KnowledgeState {
   getSubjectById: (id: string) => Subject | undefined;
   getClassById: (id: string) => Class | undefined;
   getStudentById: (id: string) => Student | undefined;
+  lastKnowledgeChange: {
+    type: 'update' | 'add' | 'delete';
+    changedAt: string;
+    kpId: string;
+    kpName?: string;
+    beforeSnapshot: KnowledgePoint[];
+    afterSnapshot: KnowledgePoint[];
+  } | null;
+  undoLastKnowledgeChange: () => KnowledgePoint[] | null;
 }
 
 const persistKnowledgePoints = (data: KnowledgePoint[]) => saveToStorage('knowledgePoints', data);
@@ -43,6 +52,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
   knowledgePoints: loadFromStorage('knowledgePoints', mockKnowledgePoints),
   selectedSubjectId: 'sub-1',
   selectedClassId: 'cls-1',
+  lastKnowledgeChange: null,
   setSelectedSubjectId: (id) => set({ selectedSubjectId: id }),
   setSelectedClassId: (id) => set({ selectedClassId: id }),
 
@@ -102,11 +112,23 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
 
   updateKnowledgePoint: (id, updates) => {
     set(state => {
+      const beforeSnapshot = state.knowledgePoints.map(kp => ({ ...kp, prerequisites: [...kp.prerequisites], successors: [...kp.successors] }));
+      const targetKp = state.knowledgePoints.find(kp => kp.id === id);
       const updated = state.knowledgePoints.map(kp =>
         kp.id === id ? { ...kp, ...updates, updatedAt: new Date().toISOString() } : kp
       );
       persistKnowledgePoints(updated);
-      return { knowledgePoints: updated };
+      return {
+        knowledgePoints: updated,
+        lastKnowledgeChange: {
+          type: 'update',
+          changedAt: new Date().toISOString(),
+          kpId: id,
+          kpName: targetKp?.name,
+          beforeSnapshot,
+          afterSnapshot: updated.map(kp => ({ ...kp, prerequisites: [...kp.prerequisites], successors: [...kp.successors] })),
+        },
+      };
     });
   },
 
@@ -118,6 +140,7 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
       updatedAt: new Date().toISOString(),
     };
     set(state => {
+      const beforeSnapshot = state.knowledgePoints.map(k => ({ ...k, prerequisites: [...k.prerequisites], successors: [...k.successors] }));
       let updated = [...state.knowledgePoints, newKp];
       updated = updated.map(item => {
         if (newKp.prerequisites.includes(item.id)) {
@@ -126,13 +149,25 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         return item;
       });
       persistKnowledgePoints(updated);
-      return { knowledgePoints: updated };
+      return {
+        knowledgePoints: updated,
+        lastKnowledgeChange: {
+          type: 'add',
+          changedAt: new Date().toISOString(),
+          kpId: newKp.id,
+          kpName: newKp.name,
+          beforeSnapshot,
+          afterSnapshot: updated.map(k => ({ ...k, prerequisites: [...k.prerequisites], successors: [...k.successors] })),
+        },
+      };
     });
     return newKp;
   },
 
   deleteKnowledgePoint: (id) => {
     set(state => {
+      const beforeSnapshot = state.knowledgePoints.map(kp => ({ ...kp, prerequisites: [...kp.prerequisites], successors: [...kp.successors] }));
+      const targetKp = state.knowledgePoints.find(kp => kp.id === id);
       let updated = state.knowledgePoints.filter(kp => kp.id !== id);
       updated = updated.map(kp => ({
         ...kp,
@@ -142,8 +177,30 @@ export const useKnowledgeStore = create<KnowledgeState>((set, get) => ({
         updatedAt: new Date().toISOString(),
       }));
       persistKnowledgePoints(updated);
-      return { knowledgePoints: updated };
+      return {
+        knowledgePoints: updated,
+        lastKnowledgeChange: {
+          type: 'delete',
+          changedAt: new Date().toISOString(),
+          kpId: id,
+          kpName: targetKp?.name,
+          beforeSnapshot,
+          afterSnapshot: updated.map(kp => ({ ...kp, prerequisites: [...kp.prerequisites], successors: [...kp.successors] })),
+        },
+      };
     });
+  },
+
+  undoLastKnowledgeChange: () => {
+    const { lastKnowledgeChange } = get();
+    if (!lastKnowledgeChange) return null;
+    const restored = lastKnowledgeChange.beforeSnapshot;
+    set(state => ({
+      knowledgePoints: restored,
+      lastKnowledgeChange: null,
+    }));
+    persistKnowledgePoints(restored);
+    return restored;
   },
 
   getKnowledgePointById: (id) => get().knowledgePoints.find(kp => kp.id === id),
